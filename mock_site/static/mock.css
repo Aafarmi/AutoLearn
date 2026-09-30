@@ -1,0 +1,338 @@
+/* AutoLearn 靶场样式。
+ *
+ * 说明：类名只是**默认**外观。cls 坑会把题目子树里的类名全部换成随机串，
+ * 所以任何适配器都不许依赖这里的 .qz-* 名字 —— 一律锚 data-quiz / 语义标签。
+ */
+
+:root {
+  --ink: #1c2430;
+  --ink-soft: #5b6675;
+  --line: #d9e0ea;
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --accent: #2f6fed;
+  --ok: #1f9d63;
+  --bad: #d4453c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.6 "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+code {
+  background: #eef2f8;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ 页头 */
+
+.qz-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.qz-header__title { margin: 0; font-size: 18px; font-weight: 600; }
+
+.qz-header__meta {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.qz-header__counter { font-weight: 600; color: var(--ink); }
+
+/* ------------------------------------------------------------------ 主体 */
+
+.qz-stage {
+  max-width: 860px;
+  margin: 24px auto 40px;
+  padding: 0 20px;
+  min-height: 60vh;
+}
+
+.qz-placeholder { color: var(--ink-soft); }
+
+.qz-question {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px 22px 24px;
+  margin: 0;
+}
+
+.qz-question__body { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+.qz-stem {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.7;
+  padding: 0 0 4px;
+  margin-bottom: 14px;
+  max-height: 96px;
+  overflow: hidden; /* truncated 标记的题会真的被截断 */
+}
+
+.qz-figure { margin: 6px 0 16px; }
+.qz-figure svg { display: block; border: 1px solid var(--line); border-radius: 6px; }
+
+canvas[data-quiz="stem-canvas"] {
+  display: block;
+  max-width: 100%;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+
+.qz-spacer { width: 100%; }
+
+/* ------------------------------------------------------------------ 选项 */
+
+.qz-options { list-style: none; margin: 0; padding: 0; }
+
+.qz-option {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.qz-option:hover { border-color: var(--accent); }
+
+.qz-option__label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  cursor: pointer;
+}
+
+.qz-option__label input { margin-top: 4px; flex: none; }
+.qz-option__text { flex: 1; }
+
+.qz-option:has(input:checked) {
+  border-color: var(--accent);
+  background: #eef4ff;
+}
+
+/* --------------------------------------------------------------- 操作区 */
+
+.qz-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+button {
+  font: inherit;
+  padding: 9px 20px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button[type="submit"], .qz-submit {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.qz-result {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f2f5fa;
+  border: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.qz-result[data-ok="true"] { background: #e9f7f0; border-color: #b8e3cd; color: var(--ok); }
+.qz-result[data-ok="false"] { background: #fdeeed; border-color: #f3c6c3; color: var(--bad); }
+
+.qz-done {
+  padding: 30px;
+  text-align: center;
+  color: var(--ink-soft);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+/* --------------------------------------------------------------- 弹窗遮罩 */
+
+.qz-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(20, 26, 36, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qz-modal__panel {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 22px 26px;
+  max-width: 380px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+}
+
+.qz-modal__title { margin: 0 0 8px; font-size: 16px; }
+.qz-modal__body { margin: 0; color: var(--ink-soft); }
+
+/* --------------------------------------------------------------- 跨域 frame */
+
+.qz-frame {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.qz-frame-body { background: var(--bg); }
+.qz-frame-body .qz-stage { margin: 0; padding: 14px; max-width: none; }
+
+/* ------------------------------------------------------------------ 页脚 */
+
+.qz-footer {
+  max-width: 860px;
+  margin: 0 auto 40px;
+  padding: 0 20px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.qz-footer__warn { color: var(--bad); }
+
+/* ========================================================================== */
+/* 网课靶场                                                                    */
+/* ========================================================================== */
+
+.cs-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+  max-width: 1080px;
+  margin: 24px auto 40px;
+  padding: 0 20px;
+}
+
+@media (max-width: 820px) {
+  .cs-layout { grid-template-columns: 1fr; }
+}
+
+.cs-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.cs-panel__title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.cs-episodes { list-style: none; margin: 0; padding: 0; }
+
+.cs-episode {
+  padding: 9px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  font-size: 14px;
+}
+
+.cs-episode:hover { background: #eef2f8; }
+
+.cs-episode[data-active="true"] {
+  background: #eef4ff;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cs-episode__meta { display: block; font-size: 12px; color: var(--ink-soft); font-weight: 400; }
+
+.cs-player { position: relative; }
+
+.cs-player video {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  background: #10161f;
+  border-radius: 10px;
+}
+
+.cs-overlay {
+  display: block;
+  width: 100%;
+  border-radius: 0 0 10px 10px;
+  margin-top: -4px;
+  background: #10161f;
+}
+
+.cs-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.cs-progress {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.cs-hint { color: var(--ink-soft); font-size: 13px; }
+
+.cs-interrupt {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(20, 26, 36, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.cs-interrupt__panel {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 20px 24px 24px;
+  width: min(720px, 100%);
+  max-height: 86vh;
+  overflow: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+}
+
+.cs-interrupt__title { margin: 0 0 14px; font-size: 16px; }
+.cs-interrupt__panel .qz-question { border: 0; padding: 0; }

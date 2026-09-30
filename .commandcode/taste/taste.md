@@ -1,0 +1,1 @@
+- Prefers communicating in Chinese. Confidence: 0.9

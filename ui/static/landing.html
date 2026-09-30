@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AutoLearn · 已接管启动</title>
+  <style>
+    :root { --bg:#f4f6f8; --surface:#fff; --border:#e3e8ee; --text:#1b2330;
+            --text-2:#5b6673; --text-3:#8a94a2; --accent:#2563eb; --ok:#16a34a;
+            --warn-soft:#fdf3e7; --warn:#b45309; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:40px 24px; background:var(--bg); color:var(--text);
+           font:14px/1.7 system-ui,"Segoe UI","Microsoft YaHei",sans-serif; }
+    .wrap { max-width:720px; margin:0 auto; }
+    .card { background:var(--surface); border:1px solid var(--border);
+            border-radius:12px; padding:28px 32px; }
+    h1 { margin:0 0 4px; font-size:19px; font-weight:600; }
+    .sub { margin:0 0 24px; color:var(--text-3); font-size:13px; }
+    ol { margin:0; padding-left:22px; }
+    li { margin-bottom:14px; }
+    li b { font-weight:600; }
+    code { background:#f1f5f9; padding:1px 6px; border-radius:4px;
+           font-family:Consolas,"Cascadia Code",monospace; font-size:13px; }
+    .note { margin-top:24px; padding:14px 16px; border-radius:8px;
+            background:var(--warn-soft); color:var(--warn); font-size:13px;
+            border:1px solid #f0dcc0; }
+    .note b { font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>AutoLearn 已接管启动这个浏览器</h1>
+      <p class="sub">调试端口已就绪，现在可以在标签页里打开你要抓的页面。</p>
+
+      <ol>
+        <li><b>在这个窗口里打开你的题目页</b>（或网课页），停在第 1 题上。</li>
+        <li>回到 <code>AutoLearn 控制台</code>，点 <b>「扫描标签页」</b>。</li>
+        <li>在下拉里选中刚打开的那一页，然后点 <b>「启动」</b>。</li>
+      </ol>
+
+      <div class="note">
+        <b>这个浏览器用的是 AutoLearn 的专用 Profile</b>，不是你的日常浏览器
+        —— 所以你原来的标签页不在这里。需要登录态的话，在这里登录一次，
+        之后会长期保留（Cookie 存在专用 Profile 里）。<br /><br />
+        之所以不能直接用你的默认 Profile：Chrome 136 起，为**默认数据目录**
+        开调试端口会被<b>静默忽略</b>（不报错，端口就是不开）。这是 Chrome
+        的安全策略，不是本软件的 bug。
+      </div>
+    </div>
+  </div>
+</body>
+</html>

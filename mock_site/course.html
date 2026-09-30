@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoLearn 网课靶场</title>
+<link rel="stylesheet" href="static/mock.css">
+</head>
+<!--
+  用法：
+    ?interrupt_at=30    第 30 秒弹出弹题（播放不中断！必须由系统显式暂停）
+    ?interrupt_at=end   弹题与 ended 同刻到达，用于验「ended 优先」这条优先级
+    ?interrupt_at=0     不弹题（默认）
+    ?dur=8              覆盖全部集时长，供快速验收（默认取 course.json）
+    ?ep=3               从第 3 集开始
+    ?quiz=21            弹题用哪一道题库题（默认 21）
+
+  关键约定：**弹题弹窗绝不暂停视频**。弹题不是媒体态，覆盖层不会让 paused 变真。
+-->
+<body data-site="mock_exam" data-scene="course">
+
+<header class="qz-header" data-media="header">
+  <h1 class="qz-header__title">AutoLearn 网课靶场</h1>
+  <div class="qz-header__meta">
+    <span class="qz-header__status" data-media="status">加载中…</span>
+  </div>
+</header>
+
+<div class="cs-layout">
+  <aside class="cs-panel">
+    <h2 class="cs-panel__title">课程分集</h2>
+    <ul class="cs-episodes" data-media="episode-list"></ul>
+  </aside>
+
+  <main class="cs-panel cs-player">
+    <video data-media="video" playsinline preload="metadata" controls>
+      你的浏览器不支持 video 标签。
+    </video>
+    <canvas class="cs-overlay" data-media="overlay" width="960" height="86"></canvas>
+
+    <div class="cs-bar">
+      <button type="button" data-media="play-button">播放</button>
+      <button type="button" data-media="next">下一集</button>
+      <span class="cs-progress" data-media="progress">00:00 / 00:00</span>
+    </div>
+
+    <p class="cs-hint">
+      弹题出现时视频**继续播放** —— 系统必须自己显式暂停，恢复时位置偏差 ≤2s。
+    </p>
+  </main>
+</div>
+
+<script src="static/quiz_shared.js"></script>
+<script src="static/course_runtime.js"></script>
+</body>
+</html>

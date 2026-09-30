@@ -1,0 +1,35 @@
+# 环境与密钥
+.env
+.venv/
+venv/
+
+# 运行期状态（含 SQLite 库与 storage_state，可能带登录态）
+state/
+
+# 留痕
+logs/
+
+# 打包产物（PyInstaller：build/ 是工作目录，dist/ 是产物；都可重打）
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# 测试临时目录（pytest --basetemp 指定在仓库内时用）
+pt_pytest/
+.pytest-tmp/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 工具临时目录（记忆与交付产物保留）
+.workbuddy/tmp/

@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "version": "1.0",
+    "course_id": "algo-basics",
+    "course_title": "算法基础（靶场）",
+    "total_episodes": 6,
+    "total_duration_s": 215,
+    "notes": [
+      "vid 必须与 core/vid.py 的 make_vid(course_id, episode_index, title) 完全一致，",
+      "tests/test_mock_site.py 会逐集比对，改标题必须重新生成。",
+      "媒体文件由 scripts/serve_mock.py 按 duration 动态合成（8kHz 16bit 单声道 WAV），",
+      "仓库里不放任何二进制。视频画面由 canvas 时间码叠加提供。",
+      "duration 全部控制在 20~60s：长视频会把 M5 的全部验收拖慢。"
+    ]
+  },
+  "episodes": [
+    {
+      "episode_index": 1,
+      "title": "第 1 讲 复杂度分析入门",
+      "vid": "b2319647f773e034",
+      "duration": 36,
+      "media": "ep01.wav"
+    },
+    {
+      "episode_index": 2,
+      "title": "第 2 讲 数组与链表",
+      "vid": "6d8d4f207aa77337",
+      "duration": 42,
+      "media": "ep02.wav"
+    },
+    {
+      "episode_index": 3,
+      "title": "第 3 讲 栈与队列",
+      "vid": "2eb2c2ff170ba58d",
+      "duration": 28,
+      "media": "ep03.wav"
+    },
+    {
+      "episode_index": 4,
+      "title": "第 4 讲 树与遍历",
+      "vid": "4ea4cd1a4f0c3d63",
+      "duration": 45,
+      "media": "ep04.wav"
+    },
+    {
+      "episode_index": 5,
+      "title": "第 5 讲 图的表示",
+      "vid": "69326c072fd03cad",
+      "duration": 24,
+      "media": "ep05.wav"
+    },
+    {
+      "episode_index": 6,
+      "title": "第 6 讲 排序算法选型",
+      "vid": "60cf505f70d29904",
+      "duration": 40,
+      "media": "ep06.wav"
+    }
+  ]
+}

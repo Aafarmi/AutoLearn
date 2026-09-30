@@ -1,0 +1,16 @@
+# AutoLearn 运行期依赖（任务书 §7.1）
+#
+# 已移除 typer：本项目有 UI，CLI 仅调试用，argparse 足够。
+# playwright 安装后需另外执行 `playwright install chromium` 或使用系统浏览器（P9）。
+
+playwright>=1.49
+fastapi>=0.115
+# 桌面窗口（P9 桌面化）：Windows 走 Edge WebView2，需 pythonnet（pywebview 自动带出）
+pywebview>=6.0
+uvicorn[standard]>=0.30
+pydantic>=2.9
+pydantic-settings>=2.5
+httpx>=0.27
+pyyaml>=6.0
+pillow>=10.4
+keyring>=25.0

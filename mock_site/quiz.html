@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoLearn 题目靶场</title>
+<!--
+  下面这行由 scripts/serve_mock.py 在响应时替换为实际的 frame 端口。
+  跨域必须靠**不同端口**实现：srcdoc 与同源 iframe 都测不出视觉兜底路径。
+-->
+<meta name="mock-frame-origin" content="__FRAME_ORIGIN__">
+<link rel="stylesheet" href="static/mock.css">
+</head>
+<body data-site="mock_exam" data-scene="quiz">
+
+<header class="qz-header" data-quiz="header">
+  <h1 class="qz-header__title">AutoLearn 题目靶场</h1>
+  <div class="qz-header__meta">
+    <span class="qz-header__counter">
+      <span data-quiz="progress-index">1</span> / <span data-quiz="progress-total">50</span>
+    </span>
+    <span class="qz-header__status" data-quiz="status">加载中…</span>
+  </div>
+</header>
+
+<main id="quiz-stage" class="qz-stage" data-quiz="stage">
+  <p class="qz-placeholder" data-quiz="boot-placeholder">正在初始化题目靶场…</p>
+</main>
+
+<footer class="qz-footer" data-quiz="footer">
+  <p>
+    用法：<code>?seq=21,22,23</code> 只跑指定题 ·
+    <code>?seed=123</code> 换打乱种子 ·
+    <code>?q=21</code> 从指定题开始
+  </p>
+  <p class="qz-footer__warn">每题埋 <code>data-answer</code> 作为地面真值，仅 MockProvider 可读。</p>
+</footer>
+
+<script src="static/quiz_shared.js"></script>
+<script src="static/quiz_runtime.js"></script>
+</body>
+</html>

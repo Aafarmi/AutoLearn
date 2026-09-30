@@ -1,0 +1,502 @@
+{
+  "meta": {
+    "version": "1.0",
+    "generated_at": "2026-09-25",
+    "total": 22,
+    "shuffle_seed": 20260925,
+    "trap_codes": [
+      "spa",
+      "lazy",
+      "canvas",
+      "iframe",
+      "cls",
+      "modal",
+      "xhr",
+      "next_after_scroll"
+    ],
+    "flag_codes": [
+      "self_ref",
+      "image",
+      "truncated"
+    ],
+    "notes": [
+      "answer 是 options 的**下标**，不是标签。页面打乱选项后会重算标签并写入 data-answer。",
+      "shuffle=false 只给自指选项题（T0-4）：打乱会让「以上都对」指向别的集合。",
+      "flags 用于标记需要特殊处理的情形：self_ref 禁打乱 / image 带图 / truncated 题干被截断。",
+      "本题库是**地面真值**，MockProvider（测试替身）读它；产品路径（模型看截图）无从读到 answer 字段，因为靶场刻意不把正确项渲染到画面上。",
+      "题库已按「覆盖全部坑/标记/题型的最小集」精简（原 50 题 → 21 题）：靶场 P11 起只作测试基础设施，精简后测试与自检跑得更快。**保留原 index 编号（稀疏）**—— 测试与脚本用 ?seq= 字面编号定位特定坑的题。",
+      "next_after_scroll（P14）：非末题的「下一题」被 1200px 占位推到首屏之外、**滚到才出现**；若是本次计划的最后一题则**永不出现**并显示「已是最后一题」。它复刻的是真实站点上「还没滚到」与「真的没有了」长得一样这个处境 —— 用 ?seq=8,15 跑两道即可同时覆盖两条分支。"
+    ]
+  },
+  "questions": [
+    {
+      "index": 1,
+      "id": "q001",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [],
+      "flags": [],
+      "stem": "TCP 建立连接时，客户端发送的第一个报文段是？",
+      "options": [
+        "SYN 报文",
+        "ACK 报文",
+        "FIN 报文",
+        "RST 报文"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 4,
+      "id": "q004",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [],
+      "flags": [],
+      "stem": "下列哪些情况会导致数据库索引失效？",
+      "options": [
+        "对索引列使用函数",
+        "隐式类型转换",
+        "使用 LIKE 前缀匹配",
+        "WHERE 中直接比较索引列"
+      ],
+      "answer": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "index": 7,
+      "id": "q007",
+      "qtype": "single",
+      "shuffle": false,
+      "traps": [],
+      "flags": [
+        "self_ref"
+      ],
+      "stem": "关于操作系统的分页机制，下列说法正确的是？",
+      "options": [
+        "页表由硬件维护",
+        "缺页中断属于内中断",
+        "页面大小通常为 4KB",
+        "以上都对"
+      ],
+      "answer": [
+        3
+      ]
+    },
+    {
+      "index": 8,
+      "id": "q008",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "next_after_scroll"
+      ],
+      "flags": [
+        "image"
+      ],
+      "stem": "观察下图的时间复杂度曲线，该算法最可能是？",
+      "image_svg": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='120'><rect width='220' height='120' fill='#ffffff'/><polyline points='10,110 60,68 110,42 160,28 210,20' fill='none' stroke='#2f6fed' stroke-width='2'/><line x1='10' y1='110' x2='210' y2='110' stroke='#888'/><line x1='10' y1='110' x2='10' y2='10' stroke='#888'/></svg>",
+      "options": [
+        "二分查找",
+        "冒泡排序",
+        "快速排序",
+        "归并排序"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 15,
+      "id": "q015",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "next_after_scroll"
+      ],
+      "flags": [
+        "truncated"
+      ],
+      "stem": "在分布式系统中，CAP 理论指出一致性、可用性与分区容错性三者无法同时满足；假设某系统优先保证可用性与分区容错性，那么在网络分区发生时该系统最可能表现出下列哪种行为特征（本题题干较长，界面已按固定高度截断显示）",
+      "options": [
+        "返回可能过期的数据",
+        "拒绝所有写请求",
+        "阻塞直到分区恢复",
+        "放弃可用性"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 21,
+      "id": "q021",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "spa"
+      ],
+      "flags": [],
+      "stem": "HTTP/2 相比 HTTP/1.1 最重要的改进是？",
+      "options": [
+        "多路复用",
+        "支持 HTTPS",
+        "增加 Cookie",
+        "支持 PUT"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 22,
+      "id": "q022",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [
+        "spa"
+      ],
+      "flags": [],
+      "stem": "下列哪些属于 NoSQL 数据库？",
+      "options": [
+        "Redis",
+        "MongoDB",
+        "HBase",
+        "PostgreSQL"
+      ],
+      "answer": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "index": 24,
+      "id": "q024",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "lazy"
+      ],
+      "flags": [],
+      "stem": "TCP 拥塞控制中，慢启动阶段的窗口增长方式为？",
+      "options": [
+        "指数增长",
+        "线性增长",
+        "对数增长",
+        "保持不变"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 26,
+      "id": "q026",
+      "qtype": "single",
+      "shuffle": false,
+      "traps": [
+        "lazy"
+      ],
+      "flags": [
+        "self_ref"
+      ],
+      "stem": "关于一致性哈希，下列说法正确的是？",
+      "options": [
+        "节点增删影响范围小",
+        "用虚拟节点解决倾斜",
+        "常用于分布式缓存",
+        "以上全部正确"
+      ],
+      "answer": [
+        3
+      ]
+    },
+    {
+      "index": 27,
+      "id": "q027",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "canvas"
+      ],
+      "flags": [
+        "image"
+      ],
+      "stem": "下图给出了一棵二叉树的形态，它的中序遍历结果是？",
+      "canvas_stem": "二叉树：根 5，左 3，右 8；3 的左 1，3 的右 4。中序遍历结果？",
+      "options": [
+        "1 3 4 5 8",
+        "5 3 1 4 8",
+        "1 4 3 8 5",
+        "5 8 3 4 1"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 28,
+      "id": "q028",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "canvas"
+      ],
+      "flags": [],
+      "stem": "根据上方的进程状态转换图，从阻塞态只能转换到？",
+      "canvas_stem": "进程状态图：新建 → 就绪 → 运行；运行 → 阻塞；阻塞 → 就绪。从阻塞态可直接到达的状态是？",
+      "options": [
+        "就绪态",
+        "运行态",
+        "新建态",
+        "终止态"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 30,
+      "id": "q030",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [
+        "iframe"
+      ],
+      "flags": [],
+      "stem": "下列哪些是 Git 的分支合并策略？",
+      "options": [
+        "merge",
+        "rebase",
+        "squash",
+        "cherry-pick"
+      ],
+      "answer": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "index": 33,
+      "id": "q033",
+      "qtype": "single",
+      "shuffle": false,
+      "traps": [
+        "cls"
+      ],
+      "flags": [
+        "self_ref"
+      ],
+      "stem": "关于消息队列的削峰填谷，下列说法正确的是？",
+      "options": [
+        "消费者按自身能力拉取",
+        "峰值请求先入队",
+        "可以保护下游服务",
+        "以上都对"
+      ],
+      "answer": [
+        3
+      ]
+    },
+    {
+      "index": 36,
+      "id": "q036",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [
+        "modal"
+      ],
+      "flags": [],
+      "stem": "下列哪些属于常见的前端性能指标？",
+      "options": [
+        "LCP",
+        "FID",
+        "CLS",
+        "TTFB 越小越差"
+      ],
+      "answer": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "index": 39,
+      "id": "q039",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "xhr"
+      ],
+      "flags": [],
+      "stem": "本题题干由接口异步下发，下列哪项是防抖的典型实现手段？",
+      "options": [
+        "定时器延迟执行",
+        "立即执行回调",
+        "递归调用",
+        "同步阻塞"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 40,
+      "id": "q040",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "spa",
+        "cls"
+      ],
+      "flags": [],
+      "stem": "HTTPS 握手中，客户端验证服务器证书主要依赖？",
+      "options": [
+        "CA 的公钥",
+        "服务器的私钥",
+        "会话密钥",
+        "对称密钥"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 42,
+      "id": "q042",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "lazy",
+        "modal"
+      ],
+      "flags": [],
+      "stem": "MVCC 主要解决的是？",
+      "options": [
+        "读写不互相阻塞",
+        "死锁检测",
+        "磁盘碎片",
+        "网络分区"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 44,
+      "id": "q044",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [
+        "canvas",
+        "cls"
+      ],
+      "flags": [],
+      "stem": "根据上方的架构图，下列哪些组件属于无状态服务？",
+      "canvas_stem": "架构图：接入层(网关) → 应用层(3 实例) → 数据层(主从)。图中属于无状态的是？",
+      "options": [
+        "网关",
+        "应用实例",
+        "主库",
+        "应用实例的本地缓存"
+      ],
+      "answer": [
+        0,
+        1
+      ]
+    },
+    {
+      "index": 46,
+      "id": "q046",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "iframe",
+        "spa"
+      ],
+      "flags": [],
+      "stem": "本题在跨域 iframe 中渲染，下列哪种隔离级别最高？",
+      "options": [
+        "可串行化",
+        "可重复读",
+        "读已提交",
+        "读未提交"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 49,
+      "id": "q049",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "canvas",
+        "modal"
+      ],
+      "flags": [],
+      "stem": "根据上方的容量规划表，QPS 峰值出现在哪个时段？",
+      "canvas_stem": "容量表：00-08 时 120 QPS，08-12 时 480 QPS，12-18 时 620 QPS，18-24 时 300 QPS。峰值时段是？",
+      "options": [
+        "12-18 时",
+        "08-12 时",
+        "18-24 时",
+        "00-08 时"
+      ],
+      "answer": [
+        0
+      ]
+    },
+    {
+      "index": 50,
+      "id": "q050",
+      "qtype": "multiple",
+      "shuffle": true,
+      "traps": [
+        "iframe",
+        "canvas",
+        "xhr"
+      ],
+      "flags": [],
+      "stem": "本题在最深一层：跨域 iframe + 图形题干 + 接口下发。下列哪些属于最终一致性模型？",
+      "canvas_stem": "终态一致性示意：写 → 副本 A 立即，副本 B 延迟，副本 C 延迟。属于最终一致性表现的是？",
+      "options": [
+        "读副本 B 可能读到旧值",
+        "一段时间后各副本收敛",
+        "写入立即全局可见",
+        "读副本 A 始终最新"
+      ],
+      "answer": [
+        0,
+        1
+      ]
+    },
+    {
+      "index": 51,
+      "id": "q051",
+      "qtype": "single",
+      "shuffle": true,
+      "traps": [
+        "next_after_scroll"
+      ],
+      "flags": [],
+      "stem": "「下一题」被一段很长的空白推到屏幕之外，必须向下滚动才会出现。滚动探测应该先把它滚出来再点，而不是判成「已跑完」。",
+      "options": [
+        "滚到「下一题」出现再点它",
+        "把「找不到按钮」当成最后一题直接收工",
+        "无限向下滚动直到超时",
+        "跳过这一题继续找下一题"
+      ],
+      "answer": [
+        0
+      ]
+    }
+  ]
+}

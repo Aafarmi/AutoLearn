@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>题目 frame</title>
+<link rel="stylesheet" href="static/mock.css">
+</head>
+<!--
+  本页由 8900 端口提供，被 8899 端口的 quiz.html 以 <iframe> 嵌入。
+  端口不同 ⇒ 不同源 ⇒ 真跨域。v0.2.0 起读题走截图，跨域 frame 里的题目
+  在视口里照样看得见；保留真跨域是为了不让「主文档里找不到」这类假设蒙混过关。
+-->
+<body class="qz-frame-body" data-site="mock_exam" data-scene="quiz-frame">
+
+<main id="frame-stage" class="qz-stage"></main>
+
+<script src="static/quiz_shared.js"></script>
+<script src="static/frame_runtime.js"></script>
+</body>
+</html>

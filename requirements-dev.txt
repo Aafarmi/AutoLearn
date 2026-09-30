@@ -1,0 +1,9 @@
+# 开发依赖（不入运行时依赖清单）
+pytest>=8.3
+pytest-asyncio>=0.24
+ruff>=0.7
+mypy>=1.13
+types-PyYAML>=6.0
+# starlette>=1.2 的 TestClient 已迁移到 httpx2；缺它时 fastapi.testclient 会回退
+# httpx 并发出 StarletteDeprecationWarning。httpx2 使用独立命名空间，与运行时 httpx 共存。
+httpx2>=2.0.0

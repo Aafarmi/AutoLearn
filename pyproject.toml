@@ -1,0 +1,82 @@
+[project]
+name = "autolearn"
+version = "0.3.0"
+description = "基于视觉模型的页面自动化系统（只使用模型读页面，不解析题目 DOM）"
+requires-python = ">=3.13"
+dependencies = [
+    "playwright>=1.49",
+    "fastapi>=0.115",
+    "pywebview>=6.0",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "pillow>=10.4",
+    "keyring>=25.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [
+    ".venv",
+    ".workbuddy",
+    "mock_site",
+    "logs",
+    "state",
+    # 沙箱/调试遗留的临时目录，可能带有受限 ACL，扫描时会报「拒绝访问」
+    "pt_pytest",
+    ".pytest-tmp",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "PTH", "RET", "TID"]
+ignore = [
+    "RUF001", # 全角标点在中文注释/文档里是正确写法，不是歧义字符
+    "RUF002",
+    "RUF003",
+    "RUF012", # pydantic 模型的不可变类属性，ruff 会误报
+    "B008",   # FastAPI 依赖注入惯用法
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG001", "ARG002", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "perception", "solve", "act", "adapters", "ui"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["core", "perception", "solve", "act", "adapters", "ui", "scripts"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+show_error_codes = true
+exclude = ["\\.venv"]
+
+[[tool.mypy.overrides]]
+module = ["playwright.*", "keyring.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["check_mock"]
+disable_error_code = ["no-any-return", "arg-type"]
+
+[[tool.mypy.overrides]]
+module = ["gen_traps_md", "serve_mock"]
+disable_error_code = ["no-any-return"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "scripts"]
+addopts = "-q"
+asyncio_mode = "auto"
+# 浏览器是 session 级夹具，整条感知用例链共用同一个事件循环；
+# 若按 function 作用域建环，session 级 async 夹具会在 setup 阶段直接报错。
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "slow: 长窗口用例（50 题全量、60s 不误报探测），默认跑但耗时长",
+]

@@ -1,0 +1,63 @@
+# AutoLearn 网课靶场媒体锚点组（M0-3 / M0-7）
+#
+# 目标站点：网课靶场（http://127.0.0.1:8899/course.html）
+#
+# v0.2.0：程序只使用模型读页面，**题目锚点已整体删除**（原 selectors.yaml）。
+# 本文件是仓库里唯一的选择器来源，它服务的是媒体态，不是题目。
+#
+# 靶场自身的约定（course_runtime.js 顶部注释）：
+#   1. 弹题弹窗**绝不暂停视频**；弹题不是媒体态，覆盖层不会让 paused 变真。
+#   2. `?interrupt_at=end` 时弹题与 ended **同刻**到达，用于验「ended 优先」。
+#   3. 每集埋 data-vid / data-duration；视频源是服务端按 duration 动态合成的 WAV，
+#      画面信息由 canvas 时间码叠加（data-media="overlay"）提供。
+
+site: mock_exam
+version: "1.0"
+
+# --- 媒体锚点组（MediaAnchorSet） --------------------------------------------
+media_anchors:
+  video: '[data-media="video"]'
+  episode_list: '[data-media="episode-list"]'
+  next: '[data-media="next"]'
+  interrupt: '[data-media="interrupt"]'
+  play_button: '[data-media="play-button"]'
+  progress: '[data-media="progress"]'
+
+# --- 扩展选择器 --------------------------------------------------------------
+selectors:
+  episode_item: '[data-media="episode"]'
+  interrupt_panel: '[data-media="interrupt-panel"]'
+  overlay: '[data-media="overlay"]'
+  status: '[data-media="status"]'
+
+# --- 属性名约定 --------------------------------------------------------------
+fields:
+  # 站点标识（Adapter.matches 读它挑适配器，不参与读题）
+  body_site_attr: "data-site"
+  episode_index_attr: "data-episode-index"
+  episode_active_attr: "data-active"
+  episode_vid_attr: "data-vid"
+  episode_duration_attr: "data-duration"
+  episode_title_attr: "data-title"
+  body_episode_attr: "data-current-episode"
+  body_vid_attr: "data-episode-vid"
+  body_course_attr: "data-course-id"
+  body_interrupt_mode_attr: "data-interrupt-mode"
+  body_interrupt_at_attr: "data-interrupt-at"
+  media_error_attr: "data-media-error"
+  active_true: "true"
+
+# --- 媒体态判据（任务书 M5「进度断言量化」） --------------------------------
+media_assertions:
+  progress_window_s: 3.0
+  progress_min_delta_s: 1.0      # 播放态推进：3s 内 ΔcurrentTime ≥ 1.0s
+  paused_max_delta_s: 0.2        # 暂停态静止：3s 内 ΔcurrentTime ≤ 0.2s
+  resume_tolerance_s: 2.0        # 恢复位置连续：|Δt| ≤ 2s
+  ended_epsilon_s: 0.35          # 轮询兜底判定 ended 的容差
+
+# --- 弹题探测 ----------------------------------------------------------------
+# 弹题不是媒体态，必须靠文档变更探测：MutationObserver + 定时轮询双保险。
+interrupt_detection:
+  observer_interval_ms: 120
+  poll_interval_ms: 80
+

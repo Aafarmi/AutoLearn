@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>AutoLearn · 控制台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ======================= 顶栏 ======================= -->
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__logo" aria-hidden="true">A</span>
+      <div>
+        <h1 class="topbar__title">AutoLearn</h1>
+        <p class="topbar__subtitle">只使用模型（视觉）· 自动化控制台</p>
+      </div>
+    </div>
+
+    <div class="topbar__status" aria-live="polite">
+      <span id="conn-indicator" class="pill pill--offline" title="SSE 连接状态">
+        <span class="pill__dot" aria-hidden="true"></span>
+        <span id="conn-label">连接中…</span>
+      </span>
+      <span id="health-version" class="pill pill--muted">—</span>
+    </div>
+
+    <div class="topbar__actions">
+      <button type="button" id="btn-home" class="btn btn--ghost btn--sm" hidden>← 返回任务</button>
+      <button type="button" id="btn-new-task" class="btn btn--primary">＋ 新建任务</button>
+      <button type="button" id="btn-shutdown" class="btn btn--sm btn--danger"
+              title="关闭控制台，并释放本程序占用的全部端口">⏻ 关机</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div id="global-banner" class="global-banner" hidden></div>
+
+    <!-- ==================== 视图一：主页（任务 + 模型库） ==================== -->
+    <section id="view-home" class="view is-active">
+      <div class="home-grid">
+
+        <!-- ① 任务 -->
+        <div id="zone-tasks" class="card">
+          <header class="zone__head">
+            <h2 class="zone__title">任务 <span id="tasks-count" class="badge">0</span></h2>
+            <div class="zone__tools">
+              <label class="pick-all" id="pick-all-wrap" hidden>
+                <input type="checkbox" id="pick-all">
+                <span>全选</span>
+              </label>
+              <button type="button" id="btn-bulk-delete"
+                      class="btn btn--sm btn--danger" hidden>删除选中</button>
+              <span id="running-hint" class="pill pill--muted" hidden></span>
+              <button type="button" id="btn-refresh-tasks" class="btn btn--sm btn--ghost">刷新</button>
+            </div>
+          </header>
+          <p class="zone__desc">
+            一个任务 = 抓一次目标、跑一遍流程。点任务卡片进入它的详情，看具体题目与过程。
+          </p>
+          <ul id="tasks-list" class="task-list stagger" role="list"></ul>
+          <div id="tasks-empty" class="empty" hidden></div>
+        </div>
+
+        <!-- ② 模型库 -->
+        <div id="zone-models" class="card">
+          <header class="zone__head">
+            <h2 class="zone__title">模型库 <span id="models-count" class="badge">0</span></h2>
+            <button type="button" id="btn-add-model" class="btn btn--sm btn--primary">＋ 添加模型</button>
+          </header>
+          <p class="zone__desc">
+            这里放**可以用的模型**（接入点 + 模型名 + 密钥）。新建任务时从里面挑两套：
+            一套判题、一套读图。排序即降级链，越靠上越优先。
+          </p>
+          <div id="models-list" class="models-list stagger" aria-live="polite"></div>
+          <div id="models-empty" class="empty" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 视图二：任务详情 ==================== -->
+    <section id="view-task" class="view">
+      <div id="task-detail" class="card">
+        <div id="detail-empty" class="empty">
+          <p class="empty__icon" aria-hidden="true">◈</p>
+          <p class="empty__title">没有选中任务</p>
+          <p class="empty__hint">请先在任务列表里点一个任务。</p>
+        </div>
+        <div id="detail-body" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ==================== 关机：确认 ==================== -->
+  <div id="shutdown-dialog" class="overlay" hidden role="dialog" aria-modal="true"
+       aria-labelledby="shutdown-title">
+    <div class="dialog dialog--narrow">
+      <header class="dialog__head">
+        <h3 id="shutdown-title" class="dialog__title">关闭控制台</h3>
+        <button type="button" id="btn-shutdown-close" class="btn btn--icon" aria-label="关闭">✕</button>
+      </header>
+      <div class="dialog__body">
+        <p class="shutdown__lead">
+          关闭后<strong>立即释放本程序占用的全部端口</strong>，这个控制台页面随即断开。
+        </p>
+        <p id="shutdown-preview-hint" class="form__hint">正在查看当前占用…</p>
+        <ul id="shutdown-preview" class="shutdown__list" hidden></ul>
+        <p id="shutdown-warn" class="form__note form__note--warn" hidden></p>
+        <p class="form__hint">
+          你自己打开的浏览器<b>不会</b>被关闭 —— 只有本程序「接管启动」的那个才会。
+          端口若被别的程序占着，也不会去动它。
+        </p>
+      </div>
+      <footer class="dialog__actions">
+        <button type="button" id="btn-shutdown-cancel" class="btn btn--ghost">取消</button>
+        <div class="dialog__actions--right">
+          <button type="button" id="btn-shutdown-confirm" class="btn btn--danger">确认关闭</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ==================== 关机：进行中 / 已关闭 ==================== -->
+  <div id="shutdown-veil" class="shutdown-veil" hidden role="status" aria-live="assertive">
+    <div class="shutdown-veil__box">
+      <p class="shutdown-veil__icon" aria-hidden="true">⏻</p>
+      <p id="shutdown-veil-title" class="shutdown-veil__title">正在关闭…</p>
+      <p id="shutdown-veil-text" class="shutdown-veil__text"></p>
+    </div>
+  </div>
+
+  <!-- ==================== 新建任务向导 ==================== -->
+  <div id="wizard" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+    <div class="dialog dialog--wide">
+      <header class="dialog__head">
+        <h3 id="wizard-title" class="dialog__title">新建任务</h3>
+        <button type="button" id="btn-wizard-close" class="btn btn--icon" aria-label="关闭">✕</button>
+      </header>
+
+      <div class="dialog__body">
+        <!-- 步骤指示 -->
+        <div class="steps" id="wizard-steps" aria-label="新建任务步骤">
+          <span class="step is-current" data-step="1"><span class="step__num">1</span>任务名</span>
+          <span class="step__arrow">›</span>
+          <span class="step" data-step="2"><span class="step__num">2</span>目标</span>
+          <span class="step__arrow">›</span>
+          <span class="step" data-step="3"><span class="step__num">3</span>模型</span>
+          <span class="step__arrow">›</span>
+          <span class="step" data-step="4"><span class="step__num">4</span>运行选项</span>
+          <span class="step__arrow">›</span>
+          <span class="step" data-step="5"><span class="step__num">5</span>确认</span>
+        </div>
+
+        <!-- 第 1 步：任务名 -->
+        <div class="wizard-pane is-active" data-step="1">
+          <div class="why">
+            <b>先给它起个名字。</b>
+            任务之间靠名字区分，之后在任务列表里点开的就是它。
+            不填也行 —— 会自动叫「任务1」「任务2」。
+          </div>
+          <div class="form__group">
+            <label class="form__label" for="wizard-name">
+              任务名<small>1~60 个字符，随时可改</small>
+            </label>
+            <input id="wizard-name" class="control" type="text" maxlength="60"
+                   placeholder="留空 = 自动取「任务N」" />
+            <p id="wizard-name-hint" class="form__hint"></p>
+          </div>
+        </div>
+
+        <!-- 第 2 步：目标 -->
+        <div class="wizard-pane" data-step="2">
+          <div class="why">
+            <b>抓什么？</b>
+            软件抓的是<b>电脑上正在运行</b>的网页或程序 —— 它不会自己打开网站，
+            而是附加到你选中的那个页面/窗口上。<b>只读你选的那一个</b>，不会导航、
+            也不会关掉你的标签页。
+          </div>
+          <fieldset class="form__group">
+            <legend class="form__label">目标类型</legend>
+            <div class="radio-row" role="radiogroup" aria-label="目标类型">
+              <label class="radio">
+                <input type="radio" name="wizard_target_kind" value="browser_page" checked />
+                <span class="radio__text">网页<small>浏览器里的标签页 · 可附加，最稳</small></span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="wizard_target_kind" value="desktop_window" />
+                <span class="radio__text">应用程序<small>原生窗口 · 目前只支持扫描与截图</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="form__group">
+            <label class="form__label">抓取目标</label>
+            <div class="zone__tools" style="margin-bottom:8px">
+              <button type="button" id="btn-scan-targets" class="btn btn--sm">抓取网页</button>
+              <button type="button" id="btn-launch-browser" class="btn btn--sm">接管启动浏览器</button>
+            </div>
+            <p id="target-grab-result" class="form__note" hidden></p>
+            <select id="target-select" class="control" aria-label="选择要抓取的目标">
+              <option value="">（未选择 · 请先扫描）</option>
+            </select>
+            <p id="target-hint" class="form__hint" hidden></p>
+            <p id="target-note" class="form__note">
+              已开着的浏览器<b>无法事后</b>开启调试端口。「接管启动」会用<b>独立的专用
+              Profile</b> 拉起浏览器并开好端口（Chrome 136+ 对默认数据目录会静默忽略调试端口）。
+              首次需在这个浏览器里登录一次，之后长期保留。
+            </p>
+          </div>
+        </div>
+
+        <!-- 第 3 步：两次模型选择 -->
+        <div class="wizard-pane" data-step="3">
+          <div class="why">
+            <b>用哪个模型？这里要选两次。</b>
+            两件事对模型的要求不一样：<b>读图</b>要的是多模态与坐标定位，
+            <b>判题</b>要的是推理与稳定输出。分开选之后，「用便宜模型判题 +
+            用多模态模型读图」才成立；模型库为空时<b>启动会被拦下</b> ——
+            v0.2.0 起页面只能由模型读，没有模型就没有第二条路可走。
+          </div>
+
+          <div id="wizard-models-empty" class="attention" hidden>
+            <div class="attention__item">
+              <span class="attention__text">
+                模型库还是空的。先去「模型库」添加至少一套模型（接入点 + 模型名 + API Key），
+                再回来选。
+              </span>
+              <button type="button" id="btn-wizard-goto-models" class="btn btn--sm btn--primary">
+                去添加模型
+              </button>
+            </div>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="wizard-vision">
+              视觉组<small>读图：截图 → 题干、选项与坐标；也负责判断「走到哪一步了」</small>
+            </label>
+            <select id="wizard-vision" class="control"></select>
+            <p id="wizard-vision-hint" class="form__hint">
+              留空 = 与解题组共用一套。只有当解题组不支持视觉、或你想让更便宜的多模态
+              模型专门读图时才需要单独选。
+            </p>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="wizard-vision-backup">
+              视觉备用<small>可多选：视觉组整体失败时，按勾选顺序顶上</small>
+            </label>
+            <div id="wizard-vision-backup" class="pick-list" role="group"
+                 aria-label="视觉备用组（可多选，勾选顺序即降级顺序）"></div>
+            <p class="form__hint">
+              不选 = 视觉组失败就直接报错，不降级。
+              <strong>勾选顺序就是降级顺序</strong>：第一个勾的排在最前。
+            </p>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="wizard-judge">
+              解题组<small>作答、判定；决定答案准不准</small>
+            </label>
+            <select id="wizard-judge" class="control"></select>
+            <p class="form__hint">
+              留空 = 用整条降级链（模型库里排在最前的先试）。模型库为空时启动会被拦下。
+            </p>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="wizard-judge-backup">
+              解题备用<small>可多选：解题组整体失败时，按勾选顺序顶上</small>
+            </label>
+            <div id="wizard-judge-backup" class="pick-list" role="group"
+                 aria-label="解题备用组（可多选，勾选顺序即降级顺序）"></div>
+            <p class="form__hint">
+              不选 = 解题组失败就直接停下，不降级。
+            </p>
+          </div>
+        </div>
+
+        <!-- 第 4 步：运行选项 -->
+        <div class="wizard-pane" data-step="4">
+          <div class="why">
+            <b>怎么跑？</b>这一屏决定「要不要复算」「要不要人盯着」。
+            每个选项下面都写了它到底改变什么，拿不准就保持默认。
+          </div>
+
+          <div class="form__group">
+            <label class="checkbox checkbox--switch">
+              <input type="checkbox" id="wizard-recalc" />
+              <span class="switch" aria-hidden="true"></span>
+              <span>复算<small>不勾选 = <b>以第一次答案为准</b>，每题只调一次模型（最省）</small></span>
+            </label>
+          </div>
+
+          <div class="form__group" id="wizard-recalc-n-group">
+            <label class="form__label" for="wizard-sample-n">
+              复算次数<small>含第一次，一共采样几次再投票</small>
+            </label>
+            <input id="wizard-sample-n" class="control" type="number" min="2" step="1" value="3" />
+            <p class="form__hint">
+              至少 2 次。次数越多越稳，也越慢越贵；一致率低于门限会标 <code>⚠复核</code> 必停等人。
+            </p>
+          </div>
+
+          <fieldset class="form__group">
+            <legend class="form__label">任务序列<small>这次跑题目还是跑网课</small></legend>
+            <div class="checkbox-row">
+              <label class="checkbox">
+                <input type="checkbox" id="wizard-task-quiz" value="quiz" checked />
+                <span>刷题（quiz）</span>
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" id="wizard-task-video" value="video" />
+                <span>网课（video）</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form__group">
+            <legend class="form__label">提交模式<small>要不要人点头</small></legend>
+            <div class="radio-row" role="radiogroup" aria-label="提交模式">
+              <label class="radio">
+                <input type="radio" name="wizard_auto_apply" value="manual" checked />
+                <span class="radio__text">半自动<small>每题停「待确认」，你点头再提交</small></span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="wizard_auto_apply" value="auto" />
+                <span class="radio__text">全自动<small>直接提交，适合跑批</small></span>
+              </label>
+            </div>
+            <p class="form__hint">
+              两种模式下 <code>⚠复核</code> 与执行失败都会 <strong>必停</strong> 等人，不受本开关影响。
+            </p>
+          </fieldset>
+
+          <div class="form__group">
+            <label class="checkbox checkbox--switch">
+              <input type="checkbox" id="wizard-training" />
+              <span class="switch" aria-hidden="true"></span>
+              <span>训练模式<small>任务<b>成功结束</b>后自动总结经验，写进「下一题方式库 / 提示词经验区」</small></span>
+            </label>
+            <p class="form__hint">
+              会改动 <code>prompts/</code> 下的经验区（带自动标记，不覆盖人工内容）。
+              也可以之后在任务详情里手动触发一次。
+            </p>
+          </div>
+        </div>
+
+        <!-- 第 5 步：确认 -->
+        <div class="wizard-pane" data-step="5">
+          <div class="why">
+            <b>确认一下就开跑。</b>下面的配置会<b>存进这个任务</b> ——
+            以后你改全局设置，这个任务仍然按今天这一套跑。
+          </div>
+          <div class="summary" id="wizard-summary"></div>
+          <label class="checkbox checkbox--switch" id="wizard-autostart-label" style="margin-top:14px">
+            <input type="checkbox" id="wizard-autostart" checked />
+            <span class="switch" aria-hidden="true"></span>
+            <span>创建后立即启动<small>取消勾选则只建任务，之后在详情页点「启动」</small></span>
+          </label>
+          <p id="wizard-blocker" class="form__note" hidden></p>
+        </div>
+      </div>
+
+      <footer class="dialog__actions">
+        <button type="button" id="btn-wizard-prev" class="btn" disabled>← 上一步</button>
+        <div class="dialog__actions--right">
+          <button type="button" id="btn-wizard-cancel" class="btn btn--ghost">取消</button>
+          <button type="button" id="btn-wizard-next" class="btn btn--primary">下一步 →</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ==================== 单题详情抽屉 ==================== -->
+  <div id="item-drawer" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="item-drawer-title">
+    <div class="dialog dialog--wide">
+      <header class="dialog__head">
+        <h3 id="item-drawer-title" class="dialog__title">题目详情</h3>
+        <button type="button" id="btn-drawer-close" class="btn btn--icon" aria-label="关闭">✕</button>
+      </header>
+      <div class="dialog__body">
+        <div id="item-drawer-body" class="drawer-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 模型配置表单 ==================== -->
+  <div id="model-dialog" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="model-dialog-title">
+    <div class="dialog">
+      <header class="dialog__head">
+        <h3 id="model-dialog-title" class="dialog__title">添加模型</h3>
+        <button type="button" id="btn-dialog-close" class="btn btn--icon" aria-label="关闭">✕</button>
+      </header>
+
+      <form id="model-form" class="form" novalidate>
+        <div class="dialog__body">
+          <div class="why">
+            <b>这里配的是「怎么连上模型」。</b>
+            名称只给你自己看；Base URL 用服务商的 <code>/v1</code> 地址；
+            Tier1 用于判题，Tier2 是「一致率不够时复算」用的更强模型（可留空）；
+            API Key 只进系统凭据管理器，界面不回显。
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="model-preset">从预设模板填充<small>可选，省得手抄地址</small></label>
+            <select id="model-preset" class="control">
+              <option value="">（手动填写）</option>
+            </select>
+          </div>
+
+          <div class="form__grid">
+            <div class="form__group">
+              <label class="form__label" for="model-name">名称 *<small>只给你看</small></label>
+              <input id="model-name" class="control" type="text" required placeholder="例如：主力 · DeepSeek" />
+            </div>
+            <div class="form__group">
+              <label class="form__label" for="model-base-url">Base URL *<small>OpenAI 兼容</small></label>
+              <input id="model-base-url" class="control" type="url" required placeholder="https://api.deepseek.com/v1" />
+            </div>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="model-model">
+              模型名 *<small>这套配置用的唯一模型</small>
+            </label>
+            <input id="model-model" class="control" type="text" required placeholder="deepseek-chat" />
+            <p class="form__hint">
+              一套配置只填 <strong>一个</strong> 模型（原先的 Tier1 / Tier2 两个模型已取消）。
+              「复算」仍然存在，但它用的是同一个模型重新采样。
+            </p>
+          </div>
+
+          <div class="form__grid form__grid--3">
+            <div class="form__group">
+              <label class="form__label" for="model-temperature">温度</label>
+              <input id="model-temperature" class="control" type="number" step="0.1" min="0" max="2" value="0.2" />
+            </div>
+            <div class="form__group">
+              <label class="form__label" for="model-timeout">超时(s)</label>
+              <input id="model-timeout" class="control" type="number" step="1" min="1" value="60" />
+            </div>
+            <div class="form__group">
+              <label class="form__label" for="model-concurrency">并发上限</label>
+              <input id="model-concurrency" class="control" type="number" step="1" min="1" value="2" />
+            </div>
+          </div>
+
+          <div class="form__group">
+            <label class="form__label" for="model-api-key">
+              API Key
+              <small id="api-key-note">只进系统凭据管理器，界面不回显明文</small>
+            </label>
+            <input id="model-api-key" class="control" type="password" autocomplete="off" placeholder="留空 = 不修改既有密钥" />
+          </div>
+
+          <label class="checkbox">
+            <input type="checkbox" id="model-enabled" checked />
+            <span>启用该配置（参与降级链）</span>
+          </label>
+
+          <div id="model-form-result" class="test-result" hidden></div>
+        </div>
+
+        <footer class="dialog__actions">
+          <button type="button" id="btn-model-test" class="btn">测试连接</button>
+          <div class="dialog__actions--right">
+            <button type="button" id="btn-model-cancel" class="btn btn--ghost">取消</button>
+            <button type="submit" id="btn-model-save" class="btn btn--primary">保存</button>
+          </div>
+        </footer>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
