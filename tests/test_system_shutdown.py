@@ -195,7 +195,7 @@ def test_own_executables_has_no_duplicate_when_not_in_a_venv(
 
 
 def test_self_ports_are_never_marked_sibling() -> None:
-    """自己的 PID 永远是 ``self``，哪怕它占着 8899/8900（``launcher.py`` 单进程形态）。"""
+    """自己的 PID 永远是 ``self``，哪怕它占着 8899/8900（同一个 python 进程起多服务的形态）。"""
     own_exe = r"C:\proj\.venv\Scripts\python.exe"
     occupants = system.collect_occupants(
         [8800, 8899, 8900],

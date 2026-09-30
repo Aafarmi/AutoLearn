@@ -157,7 +157,11 @@ def skill_for_question(qtype: QType, skill_id: str | None) -> SkillSpec | None:
 
 
 def _skills_dir() -> Path:
-    """定位技能正文目录；兼容源码、PyInstaller 与工作目录启动。"""
+    """定位技能正文目录；兼容源码、工作目录启动与冻结态（见下）。
+
+    冻结态的分支**保留着**：``pyinstaller`` 打包这条线已整体删除（见 README「启动」
+    一节），但这段兜底只有几行、不影响源码态，将来若重新引入打包可直接复用。
+    """
     candidates = [
         Path(__file__).resolve().parents[1] / SKILLS_DIR_NAME,
         Path.cwd() / SKILLS_DIR_NAME,

@@ -75,9 +75,9 @@ class PromptFileMissingError(RuntimeError):
 def _candidates() -> list[Path]:
     """按优先级列出 ``prompts/`` 可能的位置。
 
-    打包（PyInstaller onedir）后源码模块进了 PYZ，``__file__`` 不可靠，
-    所以冻结态优先按 ``_MEIPASS`` 找（``AutoLearn.spec`` 把 ``prompts/``
-    收集成 data），其次找 exe 同级目录；源码态才用 ``__file__`` 推仓库根。
+    源码态用 ``__file__`` 推仓库根。冻结态的分支**保留着**（``pyinstaller`` 打包
+    这条线已整体删除，见 README「启动」一节）——万一将来重新引入打包，
+    这段路径兜底不用再写一遍。
     """
     found: list[Path] = []
     if getattr(sys, "frozen", False):  # pragma: no cover - 打包态
