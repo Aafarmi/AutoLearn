@@ -34,6 +34,14 @@ Question and option content stores readable text, sanitized html, and run-relati
 
 The page's currently selected choices and current text-field values are recorded only in interaction.json; they are not model answers. The file stores unique CSS selectors for the question and its controls. The captured page has no HTML form, so the interaction metadata records the page content container rather than pretending there is a form.
 
+## Rich-text (UEditor) answer areas
+
+Exam pages (`/exam/<id>`) render 主观题 answers with UEditor: the toolbar and container (`.edui-editor`) live in the outer document, while the editable body sits inside a same-origin `iframe#ueditor_<n>` (`/resources/ueditor/iframe.html`). Such questions are captured with `input_kind`/`control_type` `rich_text_editor`, and their interaction slot additionally stores `frame_selector` (the selector of that iframe).
+
+During preflight the runner resolves `frame_selector`, requires exactly one editable element inside the frame, reads the current text from it, and fills by focusing that element and replacing its content, then dispatches `input`, `change` and `blur` so UEditor updates its model. Echo verification reads the same element back. Plain `input`/`textarea` controls keep using the outer-document path, and packages without `frame_selector` behave exactly as before.
+
+Crawling stops with an explicit message when a page uses an unsupported editor (Quill, TinyMCE, wangEditor) or when the UEditor iframe cannot be resolved, instead of the generic "未找到可记录的答题控件".
+
 ## Answers
 
 answers.json uses the same question IDs and option or slot IDs as questions.json. A single-choice answer references one option_id. A multiple-choice answer contains a non-empty values array of option_id values. A fill-in answer maps every slot_id to plain answer text. See schemas/ for the exact JSON contracts.

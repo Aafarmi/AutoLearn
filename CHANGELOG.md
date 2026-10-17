@@ -1,5 +1,17 @@
 # 更新记录
 
+## 未发布
+
+### 新增
+
+- 雨课堂适配器支持 UEditor 富文本答题区（考试页主观题）：抓取时识别 `iframe#ueditor_<n>` 并记录 `frame_selector`，填写时进入该 iframe 的可编辑元素写入、回读并派发 `input`/`change`/`blur` 事件；交互映射 schema 增加可选 `frame_selector`。
+
+### 修复
+
+- 抓取找不到答题控件时按实际页面结构给出明确原因（UEditor iframe 缺失、Quill/TinyMCE/wangEditor 等不支持的编辑器），不再统一报“未找到可记录的答题控件”。
+- `setup.bat` 重写 Python 3.12 探测：`py -3.12` 不可用时自动查找 uv 管理的 3.12 解释器和常见安装目录，并支持用 `AUTOLEARN_PYTHON312` 指定；找不到 3.12 时明确报错，不再回退到默认 Python。
+- `setup.bat` 识别随项目移动而失效的 `.venv`（脚本启动器指向旧路径）并自动重建，避免 `pip.exe` / `scrapling.exe` 静默失效。
+
 ## v1.0.2 - 2026-10-17
 
 ### 新增

@@ -600,6 +600,40 @@ def _is_hidden_control(control: Any) -> bool:
     )
 
 
+_EDITOR_MARKERS = (
+    (".edui-editor", "UEditor"),
+    (".ql-editor", "Quill"),
+    (".tox-tinymce", "TinyMCE"),
+    (".wangEditor", "wangEditor"),
+)
+
+
+def _rich_text_iframes(question: Any) -> list[Any]:
+    """UEditor keeps its editable body inside a same-origin child iframe."""
+    return [
+        node
+        for node in question.css("iframe[id^='ueditor_']")
+        if not _is_hidden_control(node)
+    ]
+
+
+def _missing_control_message(number: int, question: Any) -> str:
+    """Explain why no writable answer control was found, without guessing the page state."""
+    for selector, name in _EDITOR_MARKERS:
+        if not question.css(selector):
+            continue
+        if name == "UEditor":
+            return (
+                f"第 {number} 题使用 UEditor 富文本编辑器，但未找到唯一的可编辑 iframe；"
+                "无法记录答题区域。"
+            )
+        return (
+            f"第 {number} 题使用了当前适配器不支持的富文本编辑器（{name}），"
+            "无法记录答题区域。"
+        )
+    return f"第 {number} 题未找到可记录的答题控件。"
+
+
 def _text_controls(question: Any) -> list[Any]:
     body_nodes = question.css(".item-body")
     scope = body_nodes[0] if body_nodes else question
@@ -616,6 +650,11 @@ def _text_controls(question: Any) -> list[Any]:
         if candidates:
             controls = candidates
             break
+    if not controls:
+        editors = _rich_text_iframes(question)
+        if len(editors) > 1:
+            raise CrawlError("该题检测到多个富文本编辑器，无法确定唯一的答题区域。")
+        controls = editors
 
     unique: list[Any] = []
     seen: set[str] = set()
@@ -808,6 +847,8 @@ def _control_value(control: Any) -> str:
 
 def _control_kind(control: Any) -> str:
     attrs = control.attrib
+    if str(getattr(control, "tag", "")).lower() == "iframe":
+        return "rich_text_editor"
     if (
         str(attrs.get("contenteditable", "")).lower()
         in {"true", "plaintext-only", ""}
@@ -879,7 +920,7 @@ def _extract_question(
     if question_type in {"single_choice", "multiple_choice"} and not option_nodes:
         raise CrawlError(f"第 {number} 题未找到与题型匹配的选项控件。")
     if question_type in {"fill_blank", "short_answer"} and not controls:
-        raise CrawlError(f"第 {number} 题未找到可记录的答题控件。")
+        raise CrawlError(_missing_control_message(number, question))
     if question_type == "short_answer" and len(controls) != 1:
         raise CrawlError(f"第 {number} 题的简答控件数量不唯一。")
 
@@ -916,21 +957,24 @@ def _extract_question(
     for slot_ordinal, control in enumerate(controls, start=1):
         slot_id = f"blank-{slot_ordinal:03d}"
         kind = _control_kind(control)
+        control_selector = _unique_selector(
+            page,
+            control,
+            description=f"第 {number} 题第 {slot_ordinal} 个答题控件",
+        )
         answer_slots.append(
             {"slot_id": slot_id, "ordinal": slot_ordinal, "input_kind": kind}
         )
-        answer_slot_controls.append(
-            {
-                "slot_id": slot_id,
-                "selector": _unique_selector(
-                    page,
-                    control,
-                    description=f"第 {number} 题第 {slot_ordinal} 个答题控件",
-                ),
-                "control_type": kind,
-                "current_value": _control_value(control),
-            }
-        )
+        slot_control: dict[str, Any] = {
+            "slot_id": slot_id,
+            "selector": control_selector,
+            "control_type": kind,
+            "current_value": _control_value(control),
+        }
+        if str(getattr(control, "tag", "")).lower() == "iframe":
+            # The editable body lives inside this iframe, not in the outer document.
+            slot_control["frame_selector"] = control_selector
+        answer_slot_controls.append(slot_control)
 
     if question_type == "fill_blank" and not answer_slots:
         raise CrawlError(f"第 {number} 题未识别到填空位置。")

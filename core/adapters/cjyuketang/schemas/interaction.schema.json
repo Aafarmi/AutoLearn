@@ -58,7 +58,11 @@
         "slot_id": { "$ref": "#/$defs/id" },
         "selector": { "$ref": "#/$defs/selector" },
         "control_type": { "enum": ["text_input", "rich_text_editor"] },
-        "current_value": { "type": "string" }
+        "current_value": { "type": "string" },
+        "frame_selector": {
+          "$ref": "#/$defs/selector",
+          "description": "Selector of the same-origin iframe that hosts the editable body."
+        }
       }
     },
     "question_controls": {

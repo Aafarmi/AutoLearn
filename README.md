@@ -60,7 +60,8 @@ cd AutoLearn
 
 `setup.bat` 会自动：
 
-- 使用 Python 3.12 创建 `.venv`
+- 查找本机的 Python 3.12：依次尝试 `py -3.12`、uv 管理的 3.12 解释器、常见安装目录；都找不到时可用环境变量 `AUTOLEARN_PYTHON312` 指向 3.12 的 `python.exe`
+- 使用该解释器创建 `.venv`（已存在但版本不符或随项目移动后失效的 `.venv` 会被自动重建）
 - 安装或升级 `pip`
 - 安装 `requirements.txt` 中的依赖
 - 执行 `scrapling install` 安装浏览器组件

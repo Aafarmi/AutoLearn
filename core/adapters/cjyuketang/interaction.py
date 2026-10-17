@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
@@ -408,6 +409,102 @@ def _snapshot_text(value: str) -> str:
     return " ".join(value.split()).strip()
 
 
+def _editor_target(page: Any, slot_control: Any) -> dict[str, Any] | None:
+    """Resolve a rich-text editor whose editable body lives inside an iframe."""
+    frame_selector = slot_control.get("frame_selector")
+    if not isinstance(frame_selector, str) or not frame_selector:
+        return None
+    iframe = _one_locator(page, frame_selector)
+    try:
+        frame = iframe.content_frame
+    except Exception:
+        raise _PreflightError("富文本编辑器的 iframe 无法访问") from None
+    if frame is None:
+        raise _PreflightError("富文本编辑器的 iframe 无法访问")
+    try:
+        body = frame.locator("body")
+        deadline = time.monotonic() + 5.0
+        while True:
+            if body.count() == 1:
+                break
+            if time.monotonic() >= deadline:
+                raise _PreflightError("富文本编辑器没有唯一的可编辑区域")
+            time.sleep(0.2)
+        candidates = frame.locator(
+            "[contenteditable='true'], [contenteditable=''], [contenteditable='plaintext-only']"
+        )
+        editable_count = candidates.count()
+        if editable_count == 1:
+            element = candidates
+        elif editable_count == 0:
+            if not bool(body.evaluate("el => el.isContentEditable")):
+                raise _PreflightError("富文本编辑器没有可编辑区域")
+            element = body
+        else:
+            raise _PreflightError("富文本编辑器存在多个可编辑区域")
+    except _PreflightError:
+        raise
+    except Exception:
+        raise _PreflightError("富文本编辑器的 iframe 无法访问") from None
+    return {"locator": element, "frame": frame, "iframe": iframe}
+
+
+def _resolve_text_target(page: Any, slot_control: Any) -> dict[str, Any]:
+    editor = _editor_target(page, slot_control)
+    if editor is not None:
+        return editor
+    return {
+        "locator": _one_locator(page, slot_control["selector"]),
+        "frame": None,
+        "iframe": None,
+    }
+
+
+def _read_target_value(target: dict[str, Any]) -> str:
+    if target.get("frame") is not None:
+        try:
+            return str(
+                target["locator"].evaluate(
+                    "el => el ? (el.innerText || el.textContent || '') : ''"
+                )
+            )
+        except Exception:
+            raise _PreflightError("富文本编辑器当前内容无法读取") from None
+    return _read_control_value(target["locator"])
+
+
+def _editor_is_editable(target: dict[str, Any]) -> bool:
+    try:
+        return bool(
+            target["locator"].evaluate(
+                "el => !!el && (el.isContentEditable || "
+                "el.getAttribute('contenteditable') === 'true')"
+            )
+        )
+    except Exception:
+        return False
+
+
+def _fill_text_target(target: dict[str, Any], value: str) -> None:
+    locator = target["locator"]
+    if target.get("frame") is not None:
+        locator.click()
+        locator.fill(value)
+        # UEditor keeps its model in sync from events raised inside the iframe.
+        try:
+            locator.evaluate(
+                "el => {"
+                " for (const name of ['input', 'change', 'blur']) {"
+                "   el.dispatchEvent(new Event(name, {bubbles: true}));"
+                " }"
+                "}"
+            )
+        except Exception:
+            pass
+        return
+    locator.fill(value)
+
+
 def _button_label(locator: Any) -> str:
     try:
         value = locator.evaluate(
@@ -607,51 +704,52 @@ def _build_actions(
         for slot_id, value in answer_values.items():
             slot = slots_by_id[slot_id]
             slot_control = controls_by_slot[slot_id]
-            locator = _one_locator(page, slot_control["selector"])
+            target = _resolve_text_target(page, slot_control)
+            anchor = target["iframe"] if target["iframe"] is not None else target["locator"]
             try:
-                belongs = locator.evaluate(
+                belongs = anchor.evaluate(
                     """(el, selector) => {
                         const question = document.querySelector(selector);
                         return !!question && question.contains(el);
                     }""",
                     question_control["question_selector"],
                 )
-                control_shape = locator.evaluate(
-                    """el => {
-                        const tag = el.tagName.toLowerCase();
-                        return {
-                            tag,
-                            editable: el.isContentEditable || ['input', 'textarea'].includes(tag),
-                            contenteditable: !!el.isContentEditable
-                        };
-                    }"""
-                )
+                visible = anchor.is_visible()
             except Exception:
                 belongs = False
-                control_shape = {"editable": False, "contenteditable": False}
-            if (
-                not belongs
-                or not locator.is_visible()
-                or not locator.is_enabled()
-                or not locator.is_editable()
-                or not control_shape["editable"]
-            ):
+                visible = False
+            if not belongs or not visible:
                 raise _PreflightError("文本答题控件不属于对应题目或不可编辑")
             if slot_control["control_type"] != slot["input_kind"]:
                 raise _PreflightError("文本控件类型与题包记录不一致")
-            if slot_control["control_type"] == "rich_text_editor" and not control_shape["contenteditable"]:
-                raise _PreflightError("富文本控件没有唯一可见的编辑区域")
-            current = _snapshot_text(_read_control_value(locator))
-            target = _snapshot_text(value)
+            if target["frame"] is not None:
+                if not _editor_is_editable(target):
+                    raise _PreflightError("富文本控件没有唯一可见的编辑区域")
+            else:
+                try:
+                    editable = bool(
+                        target["locator"].is_enabled()
+                        and target["locator"].is_editable()
+                        and target["locator"].evaluate(
+                            "el => el.isContentEditable || "
+                            "['input', 'textarea'].includes(el.tagName.toLowerCase())"
+                        )
+                    )
+                except Exception:
+                    editable = False
+                if not editable:
+                    raise _PreflightError("文本答题控件不属于对应题目或不可编辑")
+            current = _snapshot_text(_read_target_value(target))
+            target_text = _snapshot_text(value)
             # Existing page text is not an answer source. Keep the target if
             # it is already present; otherwise fill it from answers.json.
-            if current != target:
+            if current != target_text:
                 action_list.append(
                     {
                         "kind": "text",
                         "question_id": question_id,
                         "slot_id": slot_id,
-                        "locator": locator,
+                        "target": target,
                         "value": value,
                     }
                 )
@@ -660,7 +758,7 @@ def _build_actions(
                     "kind": "text",
                     "question_id": question_id,
                     "slot_id": slot_id,
-                    "locator": locator,
+                    "target": target,
                     "value": value,
                 }
             )
@@ -760,7 +858,7 @@ def _echo_matches(entries: list[dict[str, Any]]) -> bool:
             if entry["kind"] == "choice_group":
                 if not _choice_group_matches(entry):
                     return False
-            elif _snapshot_text(_read_control_value(entry["locator"])) != _snapshot_text(entry["value"]):
+            elif _snapshot_text(_read_target_value(entry["target"])) != _snapshot_text(entry["value"]):
                 return False
         return True
     except Exception:
@@ -1018,14 +1116,16 @@ def _run_browser(
                 for action in actions:
                     if cancel_event is not None and cancel_event.is_set():
                         raise RuntimeError("operation cancelled at a safe fill point")
-                    locator = action["locator"]
                     if action["kind"] == "choice":
+                        locator = action["locator"]
                         locator.click()
                         if _choice_selected(locator) != action["selected"]:
                             raise _PreflightError("选项点击后页面状态没有按预期变化")
                     else:
-                        locator.fill(action["value"])
-                        if _snapshot_text(_read_control_value(locator)) != _snapshot_text(action["value"]):
+                        _fill_text_target(action["target"], action["value"])
+                        if _snapshot_text(_read_target_value(action["target"])) != _snapshot_text(
+                            action["value"]
+                        ):
                             raise _PreflightError("文本答案未能在页面控件中回显")
                     completed_count += 1
                     _report_progress(
@@ -1038,7 +1138,7 @@ def _run_browser(
                     if entry["kind"] == "choice_group" and not _choice_group_matches(entry):
                         raise _PreflightError("页面选项回显与答案不一致")
                     if entry["kind"] == "text" and _snapshot_text(
-                        _read_control_value(entry["locator"])
+                        _read_target_value(entry["target"])
                     ) != _snapshot_text(entry["value"]):
                         raise _PreflightError("页面文本回显与答案不一致")
             except Exception:
@@ -1128,7 +1228,7 @@ def _run_browser(
                 if entry["kind"] == "choice_group" and not _choice_group_matches(entry):
                     raise _PreflightError("桌面确认后选项状态发生变化")
                 if entry["kind"] == "text" and _snapshot_text(
-                    _read_control_value(entry["locator"])
+                    _read_target_value(entry["target"])
                 ) != _snapshot_text(entry["value"]):
                     raise _PreflightError("桌面确认后文本答案发生变化")
 
