@@ -1,0 +1,23 @@
+[project]
+name = "autolearn"
+version = "0.1.0"
+description = "Localhost WebUI for course task crawling, solving, and guided interaction."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.143.3",
+  "uvicorn==0.54.0",
+  "scrapling[fetchers]==0.4.15",
+]
+
+[project.scripts]
+autolearn-webui = "core.webui.app:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*"]
+
+[tool.setuptools.package-data]
+"core.webui" = ["static/*"]

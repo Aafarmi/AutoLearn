@@ -1,0 +1,4 @@
+# Direct runtime dependency pins for the localhost WebUI.
+fastapi==0.143.3
+uvicorn==0.54.0
+scrapling[fetchers]==0.4.15

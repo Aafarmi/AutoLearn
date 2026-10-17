@@ -1,0 +1,12 @@
+questions.json
+questions.html
+config.json
+.idea/
+/runs/
+.venv/
+/build/
+/logs/*
+!/logs/.gitkeep
+__pycache__/
+*.py[cod]
+.pytest_cache/

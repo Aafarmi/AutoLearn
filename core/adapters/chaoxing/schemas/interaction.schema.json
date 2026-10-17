@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autolearn:adapter:chaoxing:interaction:1.0",
+  "title": "Chaoxing interaction metadata",
+  "description": "Selectors and current user-answer state observed on a Chaoxing work page.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["site_id", "adapter_version", "schema_version", "run_id", "form", "question_controls"],
+  "properties": {
+    "site_id": { "const": "chaoxing" },
+    "adapter_version": { "const": "0.1.0" },
+    "schema_version": { "const": "1.0" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "form": { "$ref": "#/$defs/form" },
+    "question_controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/question_controls" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "selector": {
+      "type": "string",
+      "minLength": 1,
+      "description": "CSS selector or DOM identifier only; this field must not contain executable JavaScript."
+    },
+    "form": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector"],
+      "properties": {
+        "selector": { "$ref": "#/$defs/selector" },
+        "submit_selector": { "$ref": "#/$defs/selector" }
+      }
+    },
+    "choice_option_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "selector"],
+      "properties": {
+        "option_id": { "$ref": "#/$defs/id" },
+        "selector": { "$ref": "#/$defs/selector" }
+      }
+    },
+    "answer_slot_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_id", "selector", "control_type", "current_value"],
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/id" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "control_type": { "enum": ["text_input", "rich_text_editor"] },
+        "current_value": {
+          "type": "string",
+          "description": "Current user-entered text, or an empty string when the control is blank."
+        }
+      }
+    },
+    "question_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question_id", "question_selector", "choice_options", "answer_slots"],
+      "properties": {
+        "question_id": { "$ref": "#/$defs/id" },
+        "question_selector": { "$ref": "#/$defs/selector" },
+        "choice_options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/choice_option_control" }
+        },
+        "selected_option_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ],
+          "description": "Selected stable option ID, or null when no option is selected."
+        },
+        "answer_slots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/answer_slot_control" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "choice_options": { "minItems": 1 } },
+            "required": ["choice_options"]
+          },
+          "then": { "required": ["selected_option_id"] }
+        }
+      ]
+    }
+  }
+}

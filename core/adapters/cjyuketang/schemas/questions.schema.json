@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autolearn:adapter:cjyuketang:questions:1.0",
+  "title": "Changjiang Yuketang questions package",
+  "description": "Question content and answer-slot structure extracted from a Yuketang page.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["site_id", "adapter_version", "schema_version", "run_id", "questions"],
+  "properties": {
+    "site_id": { "const": "cjyuketang" },
+    "adapter_version": { "const": "0.1.0" },
+    "schema_version": { "const": "1.0" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/question" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "asset_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "asset_paths"],
+      "properties": {
+        "text": { "type": "string" },
+        "html": { "type": "string" },
+        "asset_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/asset_path" }
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "content"],
+      "properties": {
+        "option_id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "content": { "$ref": "#/$defs/content" }
+      }
+    },
+    "answer_slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_id", "ordinal", "input_kind"],
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/id" },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "input_kind": { "enum": ["text_input", "rich_text_editor"] }
+      }
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question_id",
+        "number",
+        "question_type",
+        "source_type",
+        "stem",
+        "options",
+        "answer_slots"
+      ],
+      "properties": {
+        "question_id": { "$ref": "#/$defs/id" },
+        "number": { "type": "integer", "minimum": 1 },
+        "question_type": {
+          "enum": ["single_choice", "multiple_choice", "fill_blank", "short_answer"]
+        },
+        "source_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Normalized visible page label, such as 单选题、多选题、判断题、填空题 or 简答题."
+        },
+        "stem": { "$ref": "#/$defs/content" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/option" } },
+        "answer_slots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/answer_slot" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "question_type": { "const": "single_choice" } },
+            "required": ["question_type"]
+          },
+          "then": {
+            "properties": {
+              "options": { "minItems": 2 },
+              "answer_slots": { "maxItems": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "question_type": { "const": "multiple_choice" } },
+            "required": ["question_type"]
+          },
+          "then": {
+            "properties": {
+              "options": { "minItems": 2 },
+              "answer_slots": { "maxItems": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "question_type": { "const": "fill_blank" } },
+            "required": ["question_type"]
+          },
+          "then": {
+            "properties": {
+              "options": { "maxItems": 0 },
+              "answer_slots": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "question_type": { "const": "short_answer" } },
+            "required": ["question_type"]
+          },
+          "then": {
+            "properties": {
+              "options": { "maxItems": 0 },
+              "answer_slots": { "minItems": 1, "maxItems": 1 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
