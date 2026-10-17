@@ -15,6 +15,7 @@ import socket
 import sys
 import threading
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -335,23 +336,12 @@ def _read_adapter_files(
     )
 
 
-def _load_model_config(
-    path: Path,
-    model_profile_id: str | None = None,
-    credential_provider: Any | None = None,
-) -> ModelConfig:
-    config = _read_json(path, "config.json")
-    if model_profile_id is None:
-        model_section = config.get("model")
-    else:
-        try:
-            model_section = (
-                credential_provider.get_model_settings(model_profile_id)
-                if credential_provider is not None
-                else ModelProfileStore(path).resolve_settings(model_profile_id)
-            )
-        except Exception:
-            raise SolverError("selected model profile is unavailable or invalid", "config") from None
+def model_config_from_section(model_section: Any) -> ModelConfig:
+    """Validate one model settings mapping into a ModelConfig.
+
+    Shared by the solver and the settings-page connection test so both apply the
+    same endpoint, API key and timeout rules.
+    """
     if not isinstance(model_section, dict):
         raise SolverError("config.json must contain a model object", "config")
 
@@ -443,6 +433,26 @@ def _load_model_config(
         timeout_seconds=float(timeout_seconds),
         api_style=api_style,
     )
+
+
+def _load_model_config(
+    path: Path,
+    model_profile_id: str | None = None,
+    credential_provider: Any | None = None,
+) -> ModelConfig:
+    config = _read_json(path, "config.json")
+    if model_profile_id is None:
+        model_section = config.get("model")
+    else:
+        try:
+            model_section = (
+                credential_provider.get_model_settings(model_profile_id)
+                if credential_provider is not None
+                else ModelProfileStore(path).resolve_settings(model_profile_id)
+            )
+        except Exception:
+            raise SolverError("selected model profile is unavailable or invalid", "config") from None
+    return model_config_from_section(model_section)
 
 
 def _schema_issues(instance: Any, schema: dict[str, Any], label: str) -> list[ValidationIssue]:
@@ -871,6 +881,87 @@ def _extract_anthropic_text(response: dict[str, Any]) -> tuple[str, bool]:
     if not text.strip():
         raise ModelOutputError("empty_response", "model endpoint returned no answer text")
     return text, response.get("stop_reason") == "max_tokens"
+
+
+PROBE_MAX_OUTPUT_TOKENS = 16
+PROBE_PROMPT = "Reply with the single word: pong"
+PROBE_TIMEOUT_CAP_SECONDS = 30.0
+
+
+def _probe_payload(settings: ModelConfig) -> dict[str, Any]:
+    """Smallest request each supported API style accepts for a liveness check."""
+    if settings.api_style == "chat_completions":
+        return {
+            "model": settings.model,
+            "messages": [{"role": "user", "content": PROBE_PROMPT}],
+            "max_tokens": PROBE_MAX_OUTPUT_TOKENS,
+        }
+    if settings.api_style == "responses":
+        return {
+            "model": settings.model,
+            "input": PROBE_PROMPT,
+            "max_output_tokens": PROBE_MAX_OUTPUT_TOKENS,
+        }
+    return {
+        "model": settings.model,
+        "max_tokens": PROBE_MAX_OUTPUT_TOKENS,
+        "messages": [{"role": "user", "content": PROBE_PROMPT}],
+    }
+
+
+def _probe_reply(settings: ModelConfig, response: dict[str, Any]) -> str:
+    """Best-effort reply text; an empty answer must not fail the health check."""
+    extractors = {
+        "chat_completions": _extract_chat_text,
+        "responses": _extract_responses_text,
+        "anthropic_messages": _extract_anthropic_text,
+    }
+    extractor = extractors.get(settings.api_style)
+    if extractor is None:
+        return ""
+    try:
+        text, _truncated = extractor(response)
+    except Exception:
+        return ""
+    return text.strip()[:120]
+
+
+def probe_model_endpoint(
+    model_section: Any,
+    *,
+    timeout_cap: float = PROBE_TIMEOUT_CAP_SECONDS,
+) -> dict[str, Any]:
+    """Verify a model endpoint with one minimal request before it is saved.
+
+    The returned mapping is safe for the UI: it carries the host, the measured
+    latency, the detected API style and a short reply. It never contains the
+    query string, request headers, the API key, or the response body.
+    """
+    settings = model_config_from_section(model_section)
+    timeout_seconds = settings.timeout_seconds
+    if timeout_cap and timeout_cap > 0:
+        timeout_seconds = min(timeout_seconds, timeout_cap)
+    probe_settings = ModelConfig(
+        provider=settings.provider,
+        endpoint_url=settings.endpoint_url,
+        api_key=settings.api_key,
+        model=settings.model,
+        temperature=0.0,
+        max_output_tokens=PROBE_MAX_OUTPUT_TOKENS,
+        timeout_seconds=float(timeout_seconds),
+        api_style=settings.api_style,
+    )
+
+    started = time.monotonic()
+    response = _post_json(probe_settings, _probe_payload(probe_settings))
+    latency_ms = int(round((time.monotonic() - started) * 1000))
+    host = urllib.parse.urlsplit(probe_settings.endpoint_url).hostname or ""
+    return {
+        "latency_ms": latency_ms,
+        "endpoint_host": host,
+        "api_style": probe_settings.api_style,
+        "reply": _probe_reply(probe_settings, response),
+    }
 
 
 def _call_model(

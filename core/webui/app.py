@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 import ipaddress
@@ -28,6 +29,7 @@ from core.solver.answer_review import (
     resolve_local_asset,
     save_task_answers,
 )
+from core.solver.runner import SolverError, probe_model_endpoint
 from core.tasks import (
     QueueState,
     TaskStatus,
@@ -742,6 +744,71 @@ def delete_profile(profile_id: str):
     profile_store = ModelProfileStore()
     default_id = profile_store.delete_profile(profile_id)
     return {"deleted": True, "default_profile_id": default_id}
+
+
+_PROBE_FAILURE_MESSAGES = {
+    "config": "配置不完整或格式不正确：请检查完整请求 URL、模型名和超时设置。",
+    "network": "无法连接该地址：请检查完整请求 URL、网络连通性或超时设置。",
+    "authentication": "API 密钥被服务端拒绝（HTTP 401），请检查密钥是否正确。",
+    "permission_denied": "该密钥或账号无权访问此模型（HTTP 403）。",
+    "not_found": "接口路径或模型不存在（HTTP 404），请检查完整请求 URL 与模型名。",
+    "rate_limited": "触发限流或额度不足（HTTP 429），请稍后重试。",
+    "bad_request": "服务端拒绝了请求（HTTP 400），端点与模型可能不匹配。",
+    "payload_too_large": "服务端认为请求过大（HTTP 413）。",
+    "upstream": "模型服务返回 5xx 错误，请稍后重试。",
+    "http": "模型服务返回了异常状态码。",
+    "context_limit": "请求超出模型上下文限制。",
+    "invalid_api_response": "返回内容不是有效 JSON，可能不是兼容的模型接口。",
+    "response_too_large": "返回内容超出允许的大小。",
+}
+
+
+@app.post("/api/profiles/test")
+async def test_profile(request: Request):
+    """Send one minimal request to an unsaved or saved profile (UI only)."""
+    body = await _json_body(request)
+    profile_id = body.get("profile_id")
+    if profile_id is not None and not isinstance(profile_id, str):
+        raise WebUIRequestError(422, "模型档案 ID 无效。")
+    submitted = body.get("settings")
+    if submitted is not None and not isinstance(submitted, dict):
+        raise WebUIRequestError(422, "模型档案配置无效。")
+    if submitted:
+        allowed_settings = {
+            "provider", "base_url", "model", "temperature",
+            "max_output_tokens", "timeout_seconds",
+        }
+        if set(submitted) - allowed_settings:
+            raise WebUIRequestError(422, "模型档案配置无效。")
+    api_key = body.get("api_key")
+    if api_key is not None and not isinstance(api_key, str):
+        raise WebUIRequestError(422, "API 密钥格式无效。")
+    clear_key = body.get("clear_api_key", False)
+    if not isinstance(clear_key, bool):
+        raise WebUIRequestError(422, "API 密钥选项无效。")
+
+    stored = ModelProfileStore().get_profile(profile_id) if profile_id else None
+    if submitted is None and stored is None:
+        raise WebUIRequestError(422, "请先填写模型配置。")
+    section: dict[str, Any] = dict(stored.settings) if stored is not None else {}
+    if submitted:
+        section.update(submitted)
+    if clear_key:
+        section["api_key"] = ""
+    elif api_key:
+        section["api_key"] = api_key
+    elif stored is not None:
+        section["api_key"] = stored.settings.get("api_key", "")
+
+    try:
+        result = await asyncio.to_thread(probe_model_endpoint, section)
+    except SolverError as error:
+        return {
+            "ok": False,
+            "category": error.category,
+            "message": _PROBE_FAILURE_MESSAGES.get(error.category, "连接测试失败。"),
+        }
+    return {"ok": True, **result}
 
 
 app.mount(

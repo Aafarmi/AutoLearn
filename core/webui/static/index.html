@@ -98,11 +98,14 @@
           <label class="span-2">API 密钥<input name="api_key" type="password" autocomplete="new-password" placeholder="留空则保留当前密钥"></label>
         </div>
         <label class="check-row"><input name="clear_api_key" type="checkbox"> 清空当前 API 密钥</label>
+        <p class="form-hint">测试连接会用当前填写的配置发送一条极小的请求（不包含题目内容），可能产生少量调用费用。</p>
         <div class="profile-actions">
+          <button id="testProfile" class="button button-secondary" type="button">测试连接</button>
           <button id="makeDefaultProfile" class="button button-secondary" type="button">设为默认</button>
           <button id="deleteProfile" class="button button-danger" type="button" disabled>删除档案</button>
           <button class="button button-primary" type="submit">保存档案</button>
         </div>
+        <p id="profileTestResult" class="form-message" role="status"></p>
         <p id="profileMessage" class="form-message" role="status"></p>
       </form>
     </div>

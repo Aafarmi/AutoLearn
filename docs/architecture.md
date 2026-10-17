@@ -105,7 +105,7 @@ AutoLearn/
 | 登录、抓取和队列 | `/authenticate`、`crawl`、`resume`、`stop`、`archive` |
 | 模型请求授权 | `/model-authorization` 及其 `/response` |
 | 网页交互与一次性提交确认 | `/interaction`、`/interaction/retry`、`/submit-confirmation` |
-| 模型档案 | `/api/profiles`、`/api/profiles/{profile_id}` DELETE 及其 `/default` |
+| 模型档案 | `/api/profiles`、`/api/profiles/{profile_id}` DELETE 及其 `/default`、`/test` 连通性探测 |
 | 本机服务关闭 | `/api/shutdown` |
 | 题包图片 | `/api/tasks/{task_id}/assets/{path}` |
 

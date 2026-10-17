@@ -1015,6 +1015,8 @@ function selectProfile(profileId) {
   const profile = state.profiles.find((item) => item.profile_id === profileId);
   const form = el("profileForm");
   el("deleteProfile").disabled = !profile;
+  el("profileTestResult").textContent = "";
+  el("profileTestResult").className = "form-message";
   if (!profile) {
     form.reset(); form.elements.profile_id.value = "";
     form.elements.temperature.value = "0.2"; form.elements.max_output_tokens.value = "4096"; form.elements.timeout_seconds.value = "120";
@@ -1032,11 +1034,9 @@ function selectProfile(profileId) {
   form.elements.clear_api_key.checked = false;
   el("profileMessage").textContent = profile.api_key_configured ? "已配置 API 密钥；留空会保留当前密钥。" : "尚未配置 API 密钥。";
 }
-async function saveProfile(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const message = el("profileMessage");
-  const payload = {
+function readProfileForm() {
+  const form = el("profileForm");
+  return {
     profile_id: form.elements.profile_id.value || null,
     name: form.elements.name.value.trim(),
     settings: {
@@ -1050,6 +1050,38 @@ async function saveProfile(event) {
     api_key: form.elements.api_key.value || null,
     clear_api_key: form.elements.clear_api_key.checked
   };
+}
+async function testProfileConnection() {
+  const button = el("testProfile");
+  const message = el("profileTestResult");
+  const payload = readProfileForm();
+  if (!payload.settings.base_url.trim()) {
+    message.className = "form-message error"; message.textContent = "请先填写完整请求 URL。";
+    return;
+  }
+  const label = button.textContent;
+  button.disabled = true; button.textContent = "测试中…";
+  message.className = "form-message"; message.textContent = "正在发送测试请求…";
+  try {
+    const result = await api("/api/profiles/test", { method: "POST", body: payload });
+    if (result.ok) {
+      const reply = result.reply ? `，模型回复：${result.reply}` : "";
+      message.className = "form-message success";
+      message.textContent = `连接正常：${result.endpoint_host || "目标地址"} 在 ${result.latency_ms} ms 内响应（${result.api_style || "未知"}）${reply}`;
+    } else {
+      message.className = "form-message error";
+      message.textContent = result.message || "连接测试失败。";
+    }
+  } catch (error) {
+    message.className = "form-message error"; message.textContent = error.message;
+  } finally {
+    button.disabled = false; button.textContent = label;
+  }
+}
+async function saveProfile(event) {
+  event.preventDefault();
+  const message = el("profileMessage");
+  const payload = readProfileForm();
   try {
     const profile = await api("/api/profiles", { method: "PUT", body: payload });
     message.className = "form-message success"; message.textContent = "模型档案已保存。";
@@ -1073,6 +1105,7 @@ function bindEvents() {
   el("newTaskForm").addEventListener("submit", submitNewTask);
   el("profileForm").addEventListener("submit", saveProfile);
   el("newProfileButton").addEventListener("click", () => selectProfile(null));
+  el("testProfile").addEventListener("click", testProfileConnection);
   el("makeDefaultProfile").addEventListener("click", makeDefaultProfile);
   el("deleteProfile").addEventListener("click", deleteSelectedProfile);
   el("shutdownService").addEventListener("click", shutdownService);
