@@ -10,3 +10,6 @@ config.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# AI 助手本地工作区（记忆、会话缓存），不进入版本库
+.workbuddy/

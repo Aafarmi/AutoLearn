@@ -453,7 +453,7 @@ function renderWizardPage(task) {
   return renderSubmitConfirmationPage(task);
 }
 function renderAuthenticationPage(task) {
-  const section = card("登录验证", "先在本机浏览器完成登录并抓取 Cookie。只有检测到本任务的 Cookie 已抓取且当前配置可用，下一步才会开放。");
+  const section = card("登录验证", "先在本机浏览器完成登录并抓取 Cookie。每次抓取都会打开一个全新的浏览器，不保留上次的登录状态。只有检测到本任务的 Cookie 已抓取且当前配置可用，下一步才会开放。");
   section.appendChild(infoGrid([
     ["任务状态", STATUS_LABELS[task.status] || task.status],
     ["Cookie 是否已抓取", state.cookieStatus.captured ? "是" : "否"],

@@ -2,7 +2,7 @@
 
 AutoLearn 是一个运行在本机的课程作业工作区，用任务队列串联题目抓取、模型解题、答案复核和网页填写。当前版本提供 localhost WebUI：浏览器显示页面，Python 服务负责本地数据、任务队列和站点操作。
 
-> 当前版本：**v1.0.0** · [更新记录](CHANGELOG.md)
+> 当前版本：**v1.0.1** · [更新记录](CHANGELOG.md)
 
 ## 功能
 
@@ -126,7 +126,7 @@ py -3.12 -m venv .venv
 
 首次安装需要网络和数百 MiB 级磁盘空间。离线、网络受限或被浏览器策略阻止时，安装会失败；AutoLearn 在服务启动时不会静默下载浏览器组件。
 
-Cookie Manager 的 `real_chrome=True` 路径还要求本机安装 Google Chrome Stable x64。它使用按站点隔离的 Chrome profile，不操作用户默认 profile；Chrome 不随项目分发。
+Cookie Manager 的 `real_chrome=True` 路径还要求本机安装 Google Chrome Stable x64。每次抓取 Cookie 都会新建一个临时 Chrome 配置目录，浏览器以未登录状态启动，抓取结束后该目录被删除：登录状态不会在本机留存，也不操作用户默认 profile；Chrome 不随项目分发。
 
 ### 5. 检查安装
 
@@ -182,7 +182,7 @@ Cookie Manager 的 `real_chrome=True` 路径还要求本机安装 Google Chrome 
 在“登录验证”页面：
 
 1. 点击“抓取 Cookie”。
-2. 根据提示在弹出的浏览器中完成登录，并确认页面已经进入目标作业。
+2. 根据提示在弹出的浏览器中完成登录，并确认页面已经进入目标作业。该浏览器每次都是全新启动，不带任何历史登录状态，所以每次抓取都需要重新登录。
 3. 返回任务页面，确认 Cookie 状态已经更新。
 
 需要更换账号或登录状态时，点击“更新登录验证”。抓取完成后才能进入“抓取题目”。
@@ -212,6 +212,7 @@ Cookie 和 API 密钥由本机后端读取，不会返回给页面。题面文�
 ## 浏览器组件
 
 - Cookie Manager 需要本机安装 Google Chrome Stable x64。
+- Cookie 抓取每次都拉起全新的临时浏览器，不保留上次的登录状态；需要重新登录属于预期行为。
 - 需要 Scrapling 浏览器型抓取或交互时，主动执行 `scrapling install`。
 - 浏览器组件必须安装在与项目相同的 Python 环境中，否则运行时会提示缺少 Scrapling 浏览器依赖。
 - 首次安装需要网络和数百 MiB 级磁盘空间；失败时请先解决网络或浏览器策略问题，再重新执行安装命令。
@@ -241,8 +242,10 @@ Cookie 和 API 密钥由本机后端读取，不会返回给页面。题面文�
 | `tasks.sqlite3` | 任务、队列和事件 |
 | `runs/<run_id>/` | 题目、交互映射、答案、结果和本地图片 |
 | `logs/` | 安全运行日志 |
-| `ChromeProfiles/<site_id>/` | 按站点隔离的浏览器 profile |
+| `ChromeProfiles/` | 旧版本遗留的浏览器 profile；当前版本不再写入，可安全删除 |
 | `backups/` | 数据迁移和数据库备份 |
+
+Cookie 抓取使用的临时 Chrome 配置位于系统临时目录（`%TEMP%\autolearn-<site_id>-*`），抓取结束后自动删除。
 
 首次由 WebUI 或独立命令启动时会检查并迁移旧源码目录中的 `config.json`、`runs/` 和 `logs/`。迁移前会校验并备份数据，原来源保留；目标冲突或验证失败时不会覆盖已有数据。Windows SQLite 数据库中的完整任务 URL 使用当前用户 DPAPI 保护，不能跨用户或跨设备恢复。
 

@@ -71,7 +71,7 @@ AutoLearn/
 │       └── static/                本机 HTML、CSS、JavaScript
 ```
 
-运行时代码使用 `core.paths.resource_path()` 定位 Schema、README、prompt 和静态资源，使用 `core.paths.data_path()` 定位配置、题包、日志、SQLite 和浏览器 profile。禁止用当前工作目录或源码文件位置推导可写用户数据路径。
+运行时代码使用 `core.paths.resource_path()` 定位 Schema、README、prompt 和静态资源，使用 `core.paths.data_path()` 定位配置、题包、日志和 SQLite。Cookie 抓取的浏览器 profile 是每次运行新建的系统临时目录，不属于用户数据。禁止用当前工作目录或源码文件位置推导可写用户数据路径。
 
 ## 模块边界
 
@@ -79,7 +79,7 @@ AutoLearn/
 | --- | --- |
 | `core.webui` | 本机页面、API 入参校验、任务域调用和安全 JSON 响应 |
 | `core.tasks` | SQLite 任务状态、队列、运行时事件和提交确认持久化 |
-| `core.auth` | 可见 Cookie Manager 和按站点隔离的 Chrome profile |
+| `core.auth` | 可见 Cookie Manager 和每次抓取新建的临时 Chrome profile |
 | `core.adapters` | 站点抓取、题包 Schema、交互映射和页面操作 |
 | `core.solver` | Schema 与附件校验、模型请求、答案生成和复核 |
 | `core.interaction` | 通用题包检查、适配器加载和执行结果校验 |
@@ -119,7 +119,7 @@ Windows 用户数据根目录为 `%LOCALAPPDATA%\AutoLearn`，包含：
 - `tasks.sqlite3`：任务、队列、运行状态和事件。
 - `runs/<run_id>/`：题目、交互映射、答案、图片和执行结果。
 - `logs/`：只记录必要汇总和安全错误分类。
-- `ChromeProfiles/<site_id>/`：站点隔离的浏览器 profile。
+- `ChromeProfiles/`：旧版本遗留的浏览器 profile；当前版本不再写入，可删除。
 - `backups/`：迁移源和 SQLite 备份。
 
 WebUI 和独立 CLI 首次启动会迁移旧源码目录里的 `config.json`、`runs/` 和 `logs/`。迁移会验证来源、备份并校验副本；旧来源保留。遇到无效配置、目标冲突或复制失败时不会覆盖已有数据。SQLite schema 升级使用 SQLite backup API 并在事务中完成。
@@ -134,7 +134,7 @@ Windows SQLite 中完整任务 URL 使用 DPAPI CurrentUser 加密。加密或�
 - `uvicorn==0.54.0`
 - `scrapling[fetchers]==0.4.15`
 
-Cookie Manager 的 `DynamicSession(real_chrome=True)` 要求本机 Chrome Stable x64，不操作用户默认 profile。普通 Scrapling 浏览器组件需由用户主动执行 `scrapling install` 安装，并与运行项目的 Python 环境匹配；服务启动时不会静默下载浏览器。
+Cookie Manager 的 `DynamicSession(real_chrome=True)` 要求本机 Chrome Stable x64，不操作用户默认 profile。每次抓取都会在系统临时目录新建空的 profile 目录并在结束时删除，因此浏览器总是以未登录状态启动，Cookie 和登录状态不会跨次留存。普通 Scrapling 浏览器组件需由用户主动执行 `scrapling install` 安装，并与运行项目的 Python 环境匹配；服务启动时不会静默下载浏览器。
 
 ## 站点契约
 

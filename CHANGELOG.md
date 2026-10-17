@@ -1,5 +1,12 @@
 # 更新记录
 
+## v1.0.1 - 2026-10-17
+
+### 变更
+
+- Cookie 抓取每次调用空 profile，不再实现 Cookie 持久化：每次抓取都在系统临时目录新建空白 Chrome profile，浏览器以未登录状态启动，抓取结束后删除该目录，不复用任何历史登录状态。
+- `%LOCALAPPDATA%\AutoLearn\ChromeProfiles\` 不再写入；旧版本遗留的目录可删除。
+
 ## v1.0.0 - 2026-10-17
 
 AutoLearn 首个正式发布版本。

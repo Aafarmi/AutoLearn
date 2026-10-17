@@ -1,8 +1,12 @@
-"""Capture site cookies in a dedicated persistent Chrome profile.
+"""Capture site cookies in a throw-away Chrome profile.
 
 This utility is intentionally separate from crawlers. A user runs it for a
 specific site adapter; after the adapter confirms an authenticated page, the
 utility writes that adapter's configured cookie field in the per-user config.json.
+
+Every capture launches a brand-new browser: the profile lives in a temporary
+directory that is deleted when the capture ends, so no cookie, login or storage
+state survives between runs.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import tempfile
 import threading
@@ -167,8 +172,38 @@ def _adapter_config(config: dict[str, Any], adapter: ModuleType) -> dict[str, An
     return section
 
 
-def _profile_root() -> Path:
-    return data_path("ChromeProfiles")
+def _create_ephemeral_profile(profile_name: str) -> Path:
+    """Create an empty, per-capture Chrome profile directory.
+
+    A new empty directory means Chrome starts signed out every time: no cookie,
+    local storage or cached login from an earlier capture is reused.
+    """
+    try:
+        return Path(tempfile.mkdtemp(prefix=f"autolearn-{profile_name}-"))
+    except OSError:
+        raise CookieManagerError("无法创建本次会话的临时 Chrome 配置目录。") from None
+
+
+def _force_removable(function: Any, path: str, error: Any) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        function(path)
+    except OSError:
+        pass
+
+
+def _discard_ephemeral_profile(profile_dir: Path) -> None:
+    """Best-effort cleanup; a locked file must never fail the capture."""
+    for attempt in range(10):
+        try:
+            shutil.rmtree(profile_dir, onexc=_force_removable)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == 9:
+                return
+            time.sleep(0.25)
 
 
 def _capture_cookies(
@@ -189,11 +224,7 @@ def _capture_cookies(
     profile_name = getattr(adapter, "PROFILE_NAME", adapter.SITE_ID)
     if not isinstance(profile_name, str) or not _SITE_ID_PATTERN.fullmatch(profile_name):
         raise CookieManagerError("适配器浏览器配置名称无效。")
-    profile_dir = _profile_root() / profile_name
-    try:
-        profile_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        raise CookieManagerError("无法创建该适配器的本地 Chrome 配置目录。") from None
+    profile_dir = _create_ephemeral_profile(profile_name)
 
     captured: dict[str, Any] = {"cookies": None, "error": None, "error_code": None}
 
@@ -254,6 +285,7 @@ def _capture_cookies(
                 if status_callback is None and cancel_event is None:
                     print(
                         f"Chrome 已打开 {adapter.SITE_ID} 页面。请在浏览器中手动登录并打开目标页面；"
+                        "本次使用全新临时配置，登录状态不会保存到本机。"
                         "完成后回到终端按 Enter 采集 Cookie。等待期间浏览器会保持响应，"
                         "按 Ctrl+C 可取消。"
                     )
@@ -361,10 +393,11 @@ def _capture_cookies(
         raise
     except Exception:
         raise CookieManagerError(
-            "无法启动或控制专用 Chrome 配置；请确认 Chrome 已安装，且该配置目录未被其他 Chrome 进程占用。"
+            "无法启动或控制本机 Chrome；请确认 Chrome 已安装，且临时配置目录未被其他进程占用。"
         ) from None
     finally:
         logging.disable(previous_disable)
+        _discard_ephemeral_profile(profile_dir)
 
     if captured["error"]:
         if captured["error_code"] == "cancelled":
@@ -476,7 +509,7 @@ def capture_for_adapter(
 def main(argv: list[str] | None = None) -> int:
     available = _available_adapters()
     parser = argparse.ArgumentParser(
-        description="打开指定适配器的持久化 Chrome 会话，并将 Cookie 更新到本地 config.json。"
+        description="为指定适配器拉起全新 Chrome 会话并采集 Cookie（不保留登录状态），写入本机 config.json。"
     )
     parser.add_argument("site_id", nargs="?", help="适配器 ID，例如 chaoxing")
     parser.add_argument("--list-adapters", action="store_true", help="列出已提供认证配置的适配器")

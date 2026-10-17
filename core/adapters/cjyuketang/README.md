@@ -6,7 +6,7 @@
 | Initial adapter_version | 0.1.0 |
 | Initial schema_version | 1.0 |
 
-The crawler reads cjyuketang.url and cjyuketang.cookie from AutoLearn's per-user config.json (`%LOCALAPPDATA%\AutoLearn\config.json` on Windows). Cookies are optional at crawl time and remain runtime request data. To capture them in the persistent browser profile, run:
+The crawler reads cjyuketang.url and cjyuketang.cookie from AutoLearn's per-user config.json (`%LOCALAPPDATA%\AutoLearn\config.json` on Windows). Cookies are optional at crawl time and remain runtime request data. To capture them with a fresh throw-away browser session (no login state is kept between captures), run:
 
     python -m core.auth.cookie_manager cjyuketang
 
