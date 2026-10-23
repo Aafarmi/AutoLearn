@@ -9,6 +9,7 @@ from dataclasses import asdict
 import importlib
 import ipaddress
 import json
+import logging
 import mimetypes
 import re
 import threading
@@ -21,6 +22,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.credentials import CredentialProviderError, LocalCredentialProvider
+from core.courses import sites as course_sites
+from core.courses.errors import CourseError
+from core.courses.store import CourseJobStore
 from core.data_migration import ensure_user_data_migrated
 from core.paths import resource_path
 from core.settings import ModelProfileError, ModelProfileStore
@@ -40,12 +44,23 @@ from core.tasks import (
     TaskTransitionError,
 )
 from core.tasks.runtime import TaskRuntimeController
+from core.webui import task_router
 
 
 DEFAULT_PORT = 8877
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 _URL_IN_TITLE = re.compile(r"https?://\S+", re.IGNORECASE)
 _SITE_LABELS = {"chaoxing": "超星学习通", "cjyuketang": "长江雨课堂"}
+
+logger = logging.getLogger(__name__)
+
+# 任务类型是前端筛选站点的一级维度（docs/TASKS.md §4.5）。
+TASK_TYPE_HOMEWORK = "homework"
+TASK_TYPE_COURSE = "course"
+_TASK_TYPES = (
+    {"task_type_id": TASK_TYPE_HOMEWORK, "label": "做题"},
+    {"task_type_id": TASK_TYPE_COURSE, "label": "网课"},
+)
 
 
 class WebUIRequestError(Exception):
@@ -66,11 +81,32 @@ async def _lifespan(application: FastAPI):
         raise
     application.state.task_store = task_store
     application.state.runtime = runtime
+    _recover_course_jobs()
     try:
         yield
     finally:
         if runtime.shutdown(timeout_seconds=None):
             task_store.close()
+
+
+def _recover_course_jobs() -> None:
+    """启动恢复：把崩溃残留的课程任务收成 `failed(process_exit)`。
+
+    放在做题侧 `TaskStore` 起好之后（§4.5），课程恢复**绝不能挡住服务启动**：
+    做题链路不依赖它，所以异常只记日志、不向外抛。真要排查看 logs/ 里的
+    WARNING/ERROR。
+    """
+    try:
+        result = CourseJobStore().recover_on_start()
+    except Exception:
+        logger.exception("课程任务崩溃恢复失败，服务继续启动")
+        return
+    if result["recovered"] or result["cleared_slots"]:
+        logger.info(
+            "课程任务恢复：%s 个置为 failed，清理 %s 个活跃槽",
+            result["recovered"],
+            result["cleared_slots"],
+        )
 
 
 app = FastAPI(
@@ -123,10 +159,15 @@ def _authentication_hint(site_id: str) -> str | None:
     return " ".join(hint.split())[:300] or None
 
 
-def _task_json(task: Any) -> dict[str, Any]:
-    """Whitelist public task fields; omit URL and confirmation capability."""
+def _task_json(task: Any, task_type: str = TASK_TYPE_HOMEWORK) -> dict[str, Any]:
+    """Whitelist public task fields; omit URL and confirmation capability.
+
+    Course summaries do not go through here (different field set, `run_id`
+    always None); see `core/courses/dto.py`. Course callers pass the type in.
+    """
     return {
         "task_id": task.task_id,
+        "task_type": task_type,
         "site_id": task.site_id,
         "title": _safe_title(task.title),
         "authentication_hint": _authentication_hint(task.site_id),
@@ -346,6 +387,12 @@ async def _store_error(_request: Request, _error: TaskStoreError):
     return JSONResponse({"detail": "本地任务数据暂不可用。"}, status_code=409)
 
 
+@app.exception_handler(CourseError)
+async def _course_error(_request: Request, error: CourseError):
+    """课程任务的安全错误 → JSON。没这条的话 CourseNotFound 会漏成 500。"""
+    return JSONResponse({"detail": error.message}, status_code=error.status_code)
+
+
 @app.exception_handler(KeyError)
 async def _not_found(_request: Request, _error: KeyError):
     return JSONResponse({"detail": "任务不存在。"}, status_code=404)
@@ -359,11 +406,29 @@ def index():
 @app.get("/api/meta")
 def get_meta(request: Request):
     store = _store(request)
+    homework_sites = sorted(store.supported_site_ids)
+    adapters = [
+        {
+            "site_id": site_id,
+            "label": _SITE_LABELS.get(site_id, site_id),
+            "task_types": [TASK_TYPE_HOMEWORK],
+        }
+        for site_id in homework_sites
+    ]
+    # 课程站点追加在做题站点之后，只来自 sites.SITES（唯一事实源）。
+    # 与做题站点重名时以做题站点为准：课程站点本就不允许进 core/adapters/。
+    adapters.extend(
+        {
+            "site_id": capability.site_id,
+            "label": capability.label,
+            "task_types": list(capability.task_types),
+        }
+        for _, capability in sorted(course_sites.SITES.items())
+        if capability.site_id not in homework_sites
+    )
     return {
-        "adapters": [
-            {"site_id": site_id, "label": _SITE_LABELS.get(site_id, site_id)}
-            for site_id in sorted(store.supported_site_ids)
-        ],
+        "adapters": adapters,
+        "task_types": [dict(item) for item in _TASK_TYPES],
         "port": request.url.port,
     }
 
@@ -456,6 +521,8 @@ async def create_task(request: Request):
 
 @app.get("/api/tasks/{task_id}")
 def get_task(request: Request, task_id: str):
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_detail(task_id)
     store = _store(request)
     task = store.get_task(task_id)
     try:
@@ -539,6 +606,8 @@ async def enqueue_authentication(request: Request, task_id: str):
     retry_failed = body.get("retry_failed", False)
     if not isinstance(retry_failed, bool):
         raise WebUIRequestError(422, "重试选项无效。")
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_authenticate(task_id, retry_failed=retry_failed)
     item = _runtime(request).enqueue_authentication(task_id, retry_failed=retry_failed)
     return {"task_id": item.task_id, "operation": _enum(item.operation), "state": _enum(item.state)}
 
@@ -678,12 +747,16 @@ async def respond_submit_confirmation(request: Request, task_id: str):
 
 @app.get("/api/tasks/{task_id}/runtime-events")
 def get_runtime_events(request: Request, task_id: str, after: int = 0):
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_runtime_events(task_id, after)
     events = _runtime(request).events_after(after, task_id=task_id)
     return {"events": events, "latest_sequence": _runtime(request).latest_event_sequence}
 
 
 @app.post("/api/tasks/{task_id}/stop")
 def stop_task(request: Request, task_id: str):
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_stop(task_id)
     store = _store(request)
     item = store.get_queue_item(task_id)
     if item.state in {QueueState.QUEUED, QueueState.PAUSED}:
@@ -698,6 +771,8 @@ def stop_task(request: Request, task_id: str):
 
 @app.post("/api/tasks/{task_id}/archive")
 def archive_task(request: Request, task_id: str):
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_archive(task_id)
     return _task_json(_store(request).archive_task(task_id))
 
 
@@ -705,6 +780,10 @@ def archive_task(request: Request, task_id: str):
 async def delete_task(request: Request, task_id: str):
     body = await _json_body(request)
     mode = body.get("mode")
+    if task_router.has_course_prefix(task_id):
+        return task_router.course_delete(
+            task_id, mode=mode, confirmation=body.get("confirmation")
+        )
     store = _store(request)
     if mode in {"record", "draft"}:
         # 没有题包的任务只删记录；老客户端发的 "draft" 仍然接受

@@ -2,3 +2,10 @@
 fastapi==0.143.3
 uvicorn==0.54.0
 scrapling[fetchers]==0.4.15
+
+# Course provider runtime imports (fuckZHS vendor subprocess). Versions verified in .venv on 2026-10-23 (T0-04).
+openai==3.37.0
+tiktoken==0.14.0
+pycryptodome==4.1.0
+Pillow==13.0.0
+requests==2.34.2
