@@ -1,6 +1,6 @@
 [project]
 name = "autolearn"
-version = "1.0.2"
+version = "1.0.4"
 description = "Localhost WebUI for course task crawling, solving, and guided interaction."
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -368,6 +368,36 @@ def _is_clickable(locator: Any) -> bool:
         return False
 
 
+def _click_choice_option(locator: Any) -> None:
+    """Click the radio/checkbox control itself through the DOM.
+
+    Element-UI options frequently wrap `<img>`; a pointer click targets the label
+    centre, can land on that image, and gets swallowed by its preview/zoom handler,
+    leaving the option unselected. A DOM click on the inner input ignores hit
+    testing, so it always toggles the control without touching the image.
+    """
+    try:
+        locator.evaluate(
+            """el => {
+                const box = el.querySelector('input[type=radio], input[type=checkbox]');
+                (box || el).click();
+            }"""
+        )
+    except Exception:
+        raise _PreflightError("选项控件无法点击") from None
+
+
+def _wait_choice_state(locator: Any, expected: bool, timeout_seconds: float = 1.0) -> bool:
+    """Wait briefly for the framework to settle the option state after a click."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if _choice_selected(locator) == expected:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 def _choice_selected(locator: Any) -> bool:
     try:
         return bool(
@@ -1010,6 +1040,7 @@ def _run_browser(
         "preflight_complete": False,
         "preflight_error": None,
         "edit_error": False,
+        "edit_error_detail": "",
         "filled": False,
         "editing_started": False,
         "submit_attempted": False,
@@ -1118,9 +1149,12 @@ def _run_browser(
                         raise RuntimeError("operation cancelled at a safe fill point")
                     if action["kind"] == "choice":
                         locator = action["locator"]
-                        locator.click()
-                        if _choice_selected(locator) != action["selected"]:
-                            raise _PreflightError("选项点击后页面状态没有按预期变化")
+                        _click_choice_option(locator)
+                        if not _wait_choice_state(locator, action["selected"]):
+                            number = action["question_id"].rsplit("-", 1)[-1].lstrip("0") or action["question_id"]
+                            raise _PreflightError(
+                                f"第 {number} 题（{action['option_id']}）点击后页面没有按预期选中"
+                            )
                     else:
                         _fill_text_target(action["target"], action["value"])
                         if _snapshot_text(_read_target_value(action["target"])) != _snapshot_text(
@@ -1141,13 +1175,19 @@ def _run_browser(
                         _read_target_value(entry["target"])
                     ) != _snapshot_text(entry["value"]):
                         raise _PreflightError("页面文本回显与答案不一致")
-            except Exception:
+            except Exception as error:
                 state["edit_error"] = True
+                state["edit_error_detail"] = str(error).strip()[:200]
                 if not fill_only:
+                    detail = state["edit_error_detail"]
                     _show_status_panel(
                         page,
                         "答题操作未完成",
-                        "填写或回显核对失败，未点击网站提交按钮。页面会保持打开，请检查后手动关闭。",
+                        (
+                            f"{detail}。未点击网站提交按钮，页面会保持打开，请检查后手动关闭。"
+                            if detail
+                            else "填写或回显核对失败，未点击网站提交按钮。页面会保持打开，请检查后手动关闭。"
+                        ),
                     )
                     _hold_visible_browser_until_closed(page)
                 return
@@ -1329,10 +1369,11 @@ def _run_browser(
                 "已触发雨课堂提交，但浏览器未返回明确结果；请先检查页面状态再决定是否重试。",
             )
         if state["mutations_during_edit"]:
-            return _unconfirmed_items(
-                question_ids,
-                "填写期间页面可能已自动保存答案；请先检查页面状态再决定是否重试。",
-            )
+            detail = state.get("edit_error_detail") or ""
+            reason = "填写期间页面可能已自动保存答案；请先检查页面状态再决定是否重试。"
+            if detail:
+                reason = f"{reason}（{detail}）"
+            return _unconfirmed_items(question_ids, reason)
         if state["page_action_called"] and state["preflight_complete"]:
             return _skipped_items(question_ids, "页面交互中断，尚未触发提交按钮。")
         raise CjyuketangInteractionError(

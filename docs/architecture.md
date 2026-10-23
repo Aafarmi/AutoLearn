@@ -23,7 +23,7 @@ flowchart LR
 典型任务流：
 
 1. WebUI 创建任务后直接进入登录验证向导。任务级 Cookie 状态由认证事件和当前本机 Cookie 配置共同判断。
-2. 抓取 Cookie 完成后进入抓取题目；题包生成后进入检查题包。题包复核通过后才能进入模型授权。
+2. 抓取 Cookie 完成后进入抓取题目；题包生成后进入检查题包。题包复核通过后才能进入模型授权。抓取失败且尚未生成题包时，任务可以带 `retry_failed=true` 重新抓 Cookie 并退回 `draft`；已生成题包的失败任务不允许刷新 Cookie。
 3. 模型授权页允许重新选择模型档案；用户确认服务目的地、题数和图片数后启动解题。
 4. 解题页显示阶段进度；解题完成后自动进入答案复核。
 5. 答案复核页的“填写答案”直接启动网页填写，不再显示独立填写页。交互器检查结构、填写并核对回显。
@@ -135,6 +135,8 @@ Windows SQLite 中完整任务 URL 使用 DPAPI CurrentUser 加密。加密或�
 - `scrapling[fetchers]==0.4.15`
 
 Cookie Manager 的 `DynamicSession(real_chrome=True)` 要求本机 Chrome Stable x64，不操作用户默认 profile。每次抓取都会在系统临时目录新建空的 profile 目录并在结束时删除，因此浏览器总是以未登录状态启动，Cookie 和登录状态不会跨次留存。普通 Scrapling 浏览器组件需由用户主动执行 `scrapling install` 安装，并与运行项目的 Python 环境匹配；服务启动时不会静默下载浏览器。
+
+适配器可选声明 `CAPTURE_START_URL`（抓 Cookie 时浏览器首先打开的地址，必须是允许域名下的 HTTPS）和 `CAPTURE_HINT`（WebUI 弹窗里的操作提示）。雨课堂用它先打开首页 `/web`，由用户登录后手动进入目标页；任务 URL 仍用于限定 Cookie 作用域。Cookie 采集会对任务 URL 与用户实际停留页面各取一次并按名称去重（先取的优先），避免从首页进入后丢失 Cookie。
 
 ## 站点契约
 

@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+import importlib
 import ipaddress
 import json
 import mimetypes
@@ -108,12 +109,27 @@ def _cookie_status(store: TaskStore, task: Any) -> dict[str, bool]:
     }
 
 
+def _authentication_hint(site_id: str) -> str | None:
+    """Adapter-declared hint shown before the login browser opens (optional)."""
+    if not isinstance(site_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", site_id):
+        return None
+    try:
+        adapter = importlib.import_module(f"core.adapters.{site_id}.auth")
+    except Exception:
+        return None
+    hint = getattr(adapter, "CAPTURE_HINT", None)
+    if not isinstance(hint, str):
+        return None
+    return " ".join(hint.split())[:300] or None
+
+
 def _task_json(task: Any) -> dict[str, Any]:
     """Whitelist public task fields; omit URL and confirmation capability."""
     return {
         "task_id": task.task_id,
         "site_id": task.site_id,
         "title": _safe_title(task.title),
+        "authentication_hint": _authentication_hint(task.site_id),
         "model_profile_id": task.model_profile_id,
         "run_id": task.run_id,
         "current_step": _enum(task.current_step),
@@ -508,8 +524,13 @@ async def update_answers(request: Request, task_id: str):
 
 
 @app.post("/api/tasks/{task_id}/authenticate")
-def enqueue_authentication(request: Request, task_id: str):
-    item = _runtime(request).enqueue_authentication(task_id)
+async def enqueue_authentication(request: Request, task_id: str):
+    raw = await request.body()
+    body = _parse_json_object(request, raw) if raw else {}
+    retry_failed = body.get("retry_failed", False)
+    if not isinstance(retry_failed, bool):
+        raise WebUIRequestError(422, "重试选项无效。")
+    item = _runtime(request).enqueue_authentication(task_id, retry_failed=retry_failed)
     return {"task_id": item.task_id, "operation": _enum(item.operation), "state": _enum(item.state)}
 
 

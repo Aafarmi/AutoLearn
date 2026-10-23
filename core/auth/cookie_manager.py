@@ -100,6 +100,20 @@ def _load_adapter(site_id: str) -> ModuleType:
         raise CookieManagerError("适配器 Cookie 域名配置无效。")
     if not callable(adapter.is_authenticated) or not callable(adapter.serialize_cookies):
         raise CookieManagerError("适配器认证处理函数无效。")
+    start_url = getattr(adapter, "CAPTURE_START_URL", None)
+    if start_url is not None:
+        if not isinstance(start_url, str) or not start_url.strip():
+            raise CookieManagerError("适配器认证起始地址无效。")
+        try:
+            parsed_start = urlsplit(start_url.strip())
+        except ValueError:
+            raise CookieManagerError("适配器认证起始地址无效。") from None
+        if (
+            parsed_start.scheme.lower() != "https"
+            or not parsed_start.hostname
+            or not _host_is_allowed(parsed_start.hostname, domains)
+        ):
+            raise CookieManagerError("适配器认证起始地址必须是该适配器允许域名下的 HTTPS 地址。")
     return adapter
 
 
@@ -226,6 +240,9 @@ def _capture_cookies(
         raise CookieManagerError("适配器浏览器配置名称无效。")
     profile_dir = _create_ephemeral_profile(profile_name)
 
+    start_url = getattr(adapter, "CAPTURE_START_URL", None)
+    start_url = start_url.strip() if isinstance(start_url, str) and start_url.strip() else url
+
     captured: dict[str, Any] = {"cookies": None, "error": None, "error_code": None}
 
     def notify(status: str) -> None:
@@ -284,7 +301,7 @@ def _capture_cookies(
 
                 if status_callback is None and cancel_event is None:
                     print(
-                        f"Chrome 已打开 {adapter.SITE_ID} 页面。请在浏览器中手动登录并打开目标页面；"
+                        f"Chrome 已打开 {adapter.SITE_ID} 的登录起始页面。请在浏览器中手动登录并打开目标页面；"
                         "本次使用全新临时配置，登录状态不会保存到本机。"
                         "完成后回到终端按 Enter 采集 Cookie。等待期间浏览器会保持响应，"
                         "按 Ctrl+C 可取消。"
@@ -356,21 +373,34 @@ def _capture_cookies(
                 captured["error_code"] = "domain_rejected"
                 return
 
-            records = active_page.context.cookies([url])
-            captured["cookies"] = [
-                record
-                for record in records
-                if isinstance(record, dict)
-                and isinstance(record.get("name"), str)
-                and isinstance(record.get("value"), str)
-                and isinstance(record.get("domain"), str)
-                and _host_is_allowed(record["domain"], adapter.ALLOWED_COOKIE_DOMAINS)
-                and (
-                    not isinstance(record.get("expires"), (int, float))
-                    or record["expires"] <= 0
-                    or record["expires"] > time.time()
-                )
-            ]
+            # 从首页登录后再手动进入目标页时，当前页 URL 与任务 URL 可能不同：
+            # 两个地址各取一次 Cookie 并按名称去重（先取的优先），保证两边的 Cookie 都不丢。
+            cookie_scopes = [url] if current_url == url else [url, current_url]
+            records: list[dict[str, Any]] = []
+            seen_names: set[str] = set()
+            for scope in cookie_scopes:
+                try:
+                    scoped_records = active_page.context.cookies([scope])
+                except Exception:
+                    continue
+                for record in scoped_records:
+                    if not isinstance(record, dict):
+                        continue
+                    name = record.get("name")
+                    if not isinstance(name, str) or name in seen_names:
+                        continue
+                    if not isinstance(record.get("value"), str):
+                        continue
+                    if not isinstance(record.get("domain"), str):
+                        continue
+                    if not _host_is_allowed(record["domain"], adapter.ALLOWED_COOKIE_DOMAINS):
+                        continue
+                    expires = record.get("expires")
+                    if isinstance(expires, (int, float)) and 0 < expires <= time.time():
+                        continue
+                    seen_names.add(name)
+                    records.append(record)
+            captured["cookies"] = records
         except KeyboardInterrupt:
             raise
         except Exception:
@@ -388,7 +418,7 @@ def _capture_cookies(
             google_search=False,
             timeout=60_000,
         ) as session:
-            session.fetch(url, page_action=page_action, wait=0, network_idle=False)
+            session.fetch(start_url, page_action=page_action, wait=0, network_idle=False)
     except KeyboardInterrupt:
         raise
     except Exception:

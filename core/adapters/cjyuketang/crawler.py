@@ -24,7 +24,7 @@ except ImportError:  # Keep offline helpers importable when Scrapling is not ins
     FetcherSession = None  # type: ignore[assignment,misc]
 
 from . import SITE_ID
-from core.data_migration import ensure_user_data_migrated
+from core.data_migration import DataMigrationError, ensure_user_data_migrated
 from core.paths import data_path
 
 
@@ -36,6 +36,11 @@ _HONG_KONG_TIMEZONE = timezone(timedelta(hours=8))
 _ALLOWED_COOKIE_DOMAINS = ("yuketang.cn",)
 _ALLOWED_ASSET_DOMAINS = ("yuketang.cn", "xuetangx.com")
 _VOID_TAGS = {"br", "hr", "img"}
+_EXAM_SESSION_BLOCK_HINT = "请勿同时开启多个考试页面"
+_EXAM_SESSION_BLOCK_MESSAGE = (
+    "考试端判定同一场考试被多个页面同时打开（页面已跳转到 /warn）；"
+    "请关闭本机其它标签页、其它浏览器以及手机端打开的同一场考试，等待约 30 秒后再抓取。"
+)
 
 
 class CrawlError(RuntimeError):
@@ -860,6 +865,38 @@ def _control_kind(control: Any) -> str:
     return "text_input"
 
 
+_OPTION_CONTAINER_HINTS = ("list-unstyled", "el-radio-group", "el-checkbox-group")
+_STEM_SKIP_TAGS = {"ul", "ol", "script", "style", "iframe", "textarea", "input", "label", "button"}
+
+
+def _node_has_content(node: Any) -> bool:
+    if _text_of(node).strip():
+        return True
+    return bool(node.css("img"))
+
+
+def _is_stem_candidate(node: Any) -> bool:
+    """A direct .item-body child that can carry the stem (not the option list)."""
+    if getattr(node, "tag", "") in _STEM_SKIP_TAGS:
+        return False
+    classes = str(node.attrib.get("class", ""))
+    if any(hint in classes for hint in _OPTION_CONTAINER_HINTS):
+        return False
+    if node.css("ul.list-unstyled, .list-unstyled-radio, .list-unstyled-checkbox"):
+        return False
+    return _node_has_content(node)
+
+
+def _stem_structure_hint(question: Any) -> str:
+    """Tag/class fingerprint of the stem container, safe to log (never the text)."""
+    parts: list[str] = []
+    for child in question.css(".item-body > *")[:6]:
+        tag = getattr(child, "tag", "?")
+        classes = ".".join(str(child.attrib.get("class", "")).split())
+        parts.append(f"{tag}.{classes}" if classes else tag)
+    return " / ".join(parts) or "没有 .item-body 子节点"
+
+
 def _stem_nodes(question: Any) -> list[Any]:
     nodes = list(question.css(".item-body h4 .custom_ueditor_cn_body"))
     if nodes:
@@ -867,7 +904,11 @@ def _stem_nodes(question: Any) -> list[Any]:
     nodes = list(question.css(".item-body .custom_ueditor_cn_body"))
     if nodes:
         return nodes
-    nodes = list(question.css(".item-body h4"))
+    nodes = [node for node in question.css(".item-body h4") if _node_has_content(node)]
+    if nodes:
+        return nodes
+    # 有的试卷（如客观题卷）把题干放在 h4 之外的直接子节点里，h4 本身是空的。
+    nodes = [child for child in question.css(".item-body > *") if _is_stem_candidate(child)]
     if nodes:
         return nodes
     body = question.css(".item-body")
@@ -1047,20 +1088,21 @@ def _prepare_run_dir(run_id: str, output_dir: str | Path | None) -> Path:
     return run_dir
 
 
-def _fetch_dynamic_page(
-    url: str,
-    cookies: Mapping[str, str],
-    cancel_event: threading.Event | None = None,
-) -> Any:
-    _check_cancel(cancel_event)
+def _blocked_page_reason(page: Any) -> str | None:
+    """Explain an exam-site interstitial page (session conflict / anti-cheat)."""
+    path = urlsplit(str(getattr(page, "url", "") or "")).path
+    if path.rstrip("/").endswith("/warn"):
+        return _EXAM_SESSION_BLOCK_MESSAGE
     try:
-        from scrapling.fetchers import DynamicFetcher
-    except ImportError:
-        raise CrawlError(
-            "静态响应没有题目容器；需要浏览器方式加载，但当前 Python 环境缺少 Scrapling 浏览器依赖。"
-            "请在运行项目的同一解释器中安装 scrapling[fetchers] 并运行 scrapling install。"
-        ) from None
+        html = getattr(page, "html_content", "") or ""
+    except Exception:
+        html = ""
+    if _EXAM_SESSION_BLOCK_HINT in html:
+        return _EXAM_SESSION_BLOCK_MESSAGE
+    return None
 
+
+def _browser_cookies(url: str, cookies: Mapping[str, str]) -> list[dict[str, Any]]:
     browser_cookies: list[dict[str, Any]] = []
     host = urlsplit(url).hostname
     if cookies and (not host or not _is_allowed_site_host(host)):
@@ -1077,6 +1119,44 @@ def _fetch_dynamic_page(
         else:
             cookie["domain"] = ".yuketang.cn"
         browser_cookies.append(cookie)
+    return browser_cookies
+
+
+def _probe_blocked_page(url: str, browser_cookies: list[dict[str, Any]]) -> str | None:
+    """Best-effort second load that explains a failed render (no wait selector)."""
+    try:
+        from scrapling.fetchers import DynamicFetcher
+    except ImportError:
+        return None
+    try:
+        page = DynamicFetcher.fetch(
+            url,
+            cookies=browser_cookies or None,
+            headless=True,
+            google_search=False,
+            network_idle=True,
+            timeout=45_000,
+        )
+    except Exception:
+        return None
+    return _blocked_page_reason(page)
+
+
+def _fetch_dynamic_page(
+    url: str,
+    cookies: Mapping[str, str],
+    cancel_event: threading.Event | None = None,
+) -> Any:
+    _check_cancel(cancel_event)
+    try:
+        from scrapling.fetchers import DynamicFetcher
+    except ImportError:
+        raise CrawlError(
+            "静态响应没有题目容器；需要浏览器方式加载，但当前 Python 环境缺少 Scrapling 浏览器依赖。"
+            "请在运行项目的同一解释器中安装 scrapling[fetchers] 并运行 scrapling install。"
+        ) from None
+
+    browser_cookies = _browser_cookies(url, cookies)
 
     previous_disable = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
@@ -1091,10 +1171,18 @@ def _fetch_dynamic_page(
             wait_selector=".exercise-item",
         )
         _check_cancel(cancel_event)
+        blocked = _blocked_page_reason(page)
+        if blocked:
+            raise CrawlError(blocked)
         return page
     except CrawlCancelled:
         raise
+    except CrawlError:
+        raise
     except Exception as error:
+        blocked = _probe_blocked_page(url, browser_cookies)
+        if blocked:
+            raise CrawlError(blocked) from None
         error_type = type(error).__name__
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", error_type):
             error_type = "UnknownError"
@@ -1127,6 +1215,9 @@ def _crawl_with_sessions(
     status = int(getattr(page, "status", 0) or 0)
     if not 200 <= status < 300:
         raise CrawlError(f"作业页面请求失败（HTTP {status}）；请检查网络和登录状态。")
+    blocked = _blocked_page_reason(page)
+    if blocked:
+        raise CrawlError(blocked)
 
     question_nodes = list(page.css(".exercise-item"))
     if not question_nodes:
@@ -1135,10 +1226,14 @@ def _crawl_with_sessions(
         status = int(getattr(page, "status", 0) or 0)
         if not 200 <= status < 300:
             raise CrawlError(f"浏览器方式加载作业页面失败（HTTP {status}）。")
+        blocked = _blocked_page_reason(page)
+        if blocked:
+            raise CrawlError(blocked)
         question_nodes = list(page.css(".exercise-item"))
         if not question_nodes:
             raise CrawlError(
-                "静态和浏览器加载后都没有识别到题目容器；请确认 URL 指向已打开的答题页面。"
+                "静态和浏览器加载后都没有识别到题目容器；"
+                "请确认 URL 指向已打开的答题页面，并确认没有其它页面同时打开同一场考试。"
             )
     page_url = _validate_page_url(str(getattr(page, "url", "") or url))
     page_selector = _page_selector(page)
@@ -1173,10 +1268,13 @@ def _crawl_with_sessions(
             raise CrawlError(
                 f"{len(asset_store.failed_urls)} 张题目图片下载失败或格式不受支持；未生成数据包。"
             )
-        for question in questions:
+        for index, question in enumerate(questions):
             number = question["number"]
             if not _content_has_payload(question["stem"]):
-                raise CrawlError(f"第 {number} 题的题干内容为空；页面未生成数据包。")
+                raise CrawlError(
+                    f"第 {number} 题的题干内容为空（题干容器：{_stem_structure_hint(question_nodes[index])}）；"
+                    "页面未生成数据包。"
+                )
             for option_ordinal, option in enumerate(question["options"], start=1):
                 if not _content_has_payload(option["content"]):
                     raise CrawlError(

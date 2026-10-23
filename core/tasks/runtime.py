@@ -17,6 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from core.auth.cookie_manager import CookieCaptureCancelled, CookieManagerError, capture_for_adapter
 from core.credentials import CredentialProviderError, LocalCredentialProvider
 from core.interaction.runner import InteractionRunnerError, interact_package
+from core.paths import data_path
 from core.settings import ModelProfileError, ModelProfileStore, profile_changed_after
 from core.solver.runner import (
     ModelAPIError,
@@ -81,6 +82,7 @@ _SAFE_PROGRESS_STATES = frozenset(
         "failed",
         "requesting_page",
         "loading_dynamic_page",
+        "waiting_exam_session",
         "page_loaded",
         "extracting_questions",
         "package_written",
@@ -98,6 +100,10 @@ _SAFE_PROGRESS_STATES = frozenset(
         "completed",
     }
 )
+# 雨课堂考试端限制同一场考试只能有一个打开中的页面：抓 Cookie 时打开的那个页面
+# 关闭后，服务端仍会在一段时间内把它算作在线，紧接着再抓取就会被跳到 /warn。
+_CRAWL_SESSION_COOLDOWN_SECONDS = 30.0
+_CRAWL_LOG_FILENAME = "crawl.log"
 _STAGE_BY_OPERATION = {
     Operation.AUTHENTICATE: "authentication",
     Operation.CRAWL: "crawl",
@@ -227,6 +233,29 @@ def _safe_category(value: Any, fallback: str = "operation_failed") -> str:
     return value if isinstance(value, str) and value in _SAFE_ERROR_CATEGORIES else fallback
 
 
+def _log_operation_failure(operation: Operation, error: Exception) -> None:
+    """Append the user-facing failure reason to logs/crawl.log.
+
+    The message is masked (URLs removed, length capped) because runtime errors must
+    never persist the task URL or credentials. Logging must not break the operation.
+    """
+    try:
+        path = data_path("logs", _CRAWL_LOG_FILENAME)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        message = re.sub(r"https?://\S+", "<url>", str(error)).strip()
+        message = re.sub(
+            r"(?i)\b(cookie|authorization|api[_-]?key|access[_-]?token|token)\b\s*[:=]\s*\S+",
+            r"\1=<redacted>",
+            message,
+        )
+        message = " ".join(message.split())[:500] or "(no message)"
+        stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f"{stamp}\t{operation.value}\t{type(error).__name__}\t{message}\n")
+    except (OSError, ValueError):
+        pass
+
+
 def _display_safe(value: Any, limit: int = 120) -> str:
     if not isinstance(value, str):
         return ""
@@ -304,6 +333,7 @@ class TaskRuntimeController:
         self._active_request: _WorkerRequest | None = None
         self._stop_requested: set[str] = set()
         self._confirmed_profile_versions: dict[str, int] = {}
+        self._last_authentication_at: dict[str, float] = {}
         self._pending_model_authorization: dict[
             str, tuple[ModelAuthorizationRequest, bool, bool, bool]
         ] = {}
@@ -783,8 +813,10 @@ class TaskRuntimeController:
         try:
             if operation == Operation.AUTHENTICATE:
                 self._execute_authentication(request, progress)
+                self._last_authentication_at[context.task_id] = time.monotonic()
                 return _WorkerResult(context.task_id, operation, "completed", context.run_id)
             if operation == Operation.CRAWL:
+                self._await_exam_session_release(request, progress)
                 result = self._execute_crawl(request, progress)
                 return _WorkerResult(
                     context.task_id,
@@ -830,6 +862,8 @@ class TaskRuntimeController:
             )
         except Exception as error:
             category = self._error_category(error, operation)
+            if operation == Operation.CRAWL and not request.cancel_event.is_set():
+                _log_operation_failure(operation, error)
             if operation == Operation.INTERACT:
                 read_only_errors = {
                     "file_missing",
@@ -905,6 +939,29 @@ class TaskRuntimeController:
             status_callback=lambda status: progress(status),
             cancel_event=request.cancel_event,
         )
+
+    def _await_exam_session_release(
+        self,
+        request: _WorkerRequest,
+        progress: Callable[..., None],
+    ) -> None:
+        """Wait out the window where the cookie-capture page still counts as open.
+
+        Yuketang exam pages refuse a second concurrent open and redirect to /warn, so a
+        crawl started a few seconds after authentication would always fail.
+        """
+        authenticated_at = self._last_authentication_at.get(request.context.task_id)
+        if authenticated_at is None:
+            return
+        remaining = _CRAWL_SESSION_COOLDOWN_SECONDS - (time.monotonic() - authenticated_at)
+        if remaining <= 0:
+            return
+        progress("waiting_exam_session")
+        deadline = time.monotonic() + remaining
+        while time.monotonic() < deadline:
+            if request.cancel_event.is_set():
+                return
+            time.sleep(0.5)
 
     @staticmethod
     def _execute_crawl(request: _WorkerRequest, progress: Callable[..., None]) -> dict[str, Any]:

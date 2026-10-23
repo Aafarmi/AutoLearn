@@ -1517,6 +1517,15 @@ class TaskStore:
                             "无法恢复 Cookie 更新前的任务阶段；请新建任务。"
                         )
                     queue_return_status = restored_status
+                elif (
+                    retry_failed
+                    and status == TaskStatus.FAILED
+                    and row["last_operation"] == Operation.CRAWL.value
+                    and not row["run_id"]
+                ):
+                    # 抓取失败时还没有题包，刷新 Cookie 后退回草稿是唯一不覆盖产物的落点。
+                    # 解题/填写失败的任务带 run_id，绝不能走这条分支。
+                    queue_return_status = TaskStatus.DRAFT
                 else:
                     raise TaskTransitionError("当前任务阶段不能更新 Cookie。")
             elif operation == Operation.CRAWL:

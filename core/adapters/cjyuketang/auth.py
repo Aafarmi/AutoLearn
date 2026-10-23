@@ -13,6 +13,14 @@ COOKIE_VALUE_TYPE = str
 PROFILE_NAME = "cjyuketang"
 ALLOWED_COOKIE_DOMAINS = ("yuketang.cn",)
 
+# 任务 URL 保持不变，只把「抓 Cookie 时浏览器首先打开的页面」定到雨课堂首页：
+# 直接打开考试/作业深链经常在未登录时被拦截或落到异常页，先到首页登录再手动进入更稳。
+CAPTURE_START_URL = "https://changjiang.yuketang.cn/web"
+CAPTURE_HINT = (
+    "浏览器会先打开雨课堂首页。请在该浏览器里完成登录，然后手动点击进入任务里的作业 / 考试页面；"
+    "识别到题目页面后会自动保存 Cookie，请不要关闭浏览器直到本页提示成功。"
+)
+
 
 def is_authenticated(page: Any) -> bool:
     """只将包含雨课堂题目结构的页面视为已登录的目标页。"""

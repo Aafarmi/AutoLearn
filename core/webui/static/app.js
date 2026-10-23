@@ -38,7 +38,7 @@ const state = {
   detail: null, detailTaskId: null, detailRevision: null, detailRefreshing: false, overviewRefreshing: false, review: null, reviewError: null, answerMap: new Map(),
   confirmationId: null, modelAuthorizationId: null, profileSelection: null,
   editTaskId: null, busy: false, shuttingDown: false,
-  cookieStatus: { captured: false, configured: false }, submitPending: null,
+  cookieStatus: { captured: false, configured: false }, submitPending: null, authenticationHint: null,
   wizardTaskId: null, wizardStep: null, wizardDerivedStep: null,
   runtimeEvents: [], runtimeSequence: 0
 };
@@ -110,7 +110,7 @@ async function shutdownService() {
   try {
     await api("/api/shutdown", { method: "POST" });
     state.shuttingDown = true;
-    el("serviceStatus").textContent = "本机服务已关闭";
+    el("serviceStatus").textContent = "已关闭";
     el("serviceStatus").className = "service-status";
     toast("服务已关闭，可以关闭此页面。", "success");
     window.setTimeout(() => { try { window.close(); } catch (_) {} }, 400);
@@ -139,6 +139,22 @@ async function deleteSelectedProfile() {
 }
 function openDialog(id) { const dialog = el(id); if (dialog && !dialog.open) dialog.showModal(); }
 function closeDialog(id) { const dialog = el(id); if (dialog && dialog.open) dialog.close(); }
+
+function showAuthenticationHint() {
+  const hint = state.authenticationHint;
+  const target = el("authCaptureHint");
+  if (target) {
+    target.textContent = hint || "浏览器已打开登录页面。请完成登录并手动进入任务里的目标页面；识别到题目页面后会自动保存 Cookie。";
+  }
+  openDialog("authCaptureDialog");
+}
+function startAuthentication(task, retryFailed) {
+  showAuthenticationHint();
+  return runAction(
+    () => api(`/api/tasks/${task.task_id}/authenticate`, { method: "POST", body: retryFailed ? { retry_failed: true } : {} }),
+    "已加入登录验证队列。"
+  );
+}
 
 function renderMeta() {
   const siteFilter = el("siteFilter");
@@ -197,9 +213,9 @@ function renderQueueSummary() {
   if (!active && !queued) { summary.hidden = true; return; }
   const task = state.tasks.find((item) => item.task_id === active?.task_id);
   summary.hidden = false;
-  summary.textContent = active
-    ? `当前执行：${task?.title || "任务"} · ${active.operation}${queued ? ` · 另有 ${queued} 项等待` : ""}`
-    : `有 ${queued} 项操作等待执行。`;
+  summary.replaceChildren(node("span", "dot"), node("span", "", active
+    ? `${task?.title || "任务"} · ${active.operation}${queued ? ` · 另 ${queued} 项` : ""}`
+    : `${queued} 项等待执行`));
 }
 async function refreshOverview() {
   if (state.shuttingDown || state.overviewRefreshing) return;
@@ -209,7 +225,7 @@ async function refreshOverview() {
     state.tasks = overview.tasks;
     state.queue = overview.queue;
     state.profiles = profiles.profiles;
-    el("serviceStatus").textContent = "本机服务已连接";
+    el("serviceStatus").textContent = "已连接";
     el("serviceStatus").className = "service-status ready";
     if (!state.activeTaskId && state.tasks.length) state.activeTaskId = state.tasks[0].task_id;
     if (state.activeTaskId && !state.tasks.some((task) => task.task_id === state.activeTaskId)) state.activeTaskId = state.tasks[0]?.task_id || null;
@@ -219,7 +235,7 @@ async function refreshOverview() {
     renderProfileList();
   } catch (error) {
     if (!state.shuttingDown) {
-      el("serviceStatus").textContent = "本机服务不可用";
+      el("serviceStatus").textContent = "未连接";
       el("serviceStatus").className = "service-status error";
     }
   } finally {
@@ -251,6 +267,7 @@ async function refreshDetail(force = false) {
     state.submitPending = null;
     state.wizardTaskId = null; state.wizardStep = null; state.wizardDerivedStep = null;
     state.runtimeEvents = []; state.runtimeSequence = 0;
+    state.authenticationHint = null;
   }
   try {
     const detail = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
@@ -259,6 +276,7 @@ async function refreshDetail(force = false) {
     const changed = force || revision !== state.detailRevision;
     state.detail = detail;
     state.cookieStatus = detail.cookie_status || { captured: false, configured: false };
+    state.authenticationHint = detail.task.authentication_hint || null;
     const runtime = await api(`/api/tasks/${encodeURIComponent(taskId)}/runtime-events?after=${switchedTask ? 0 : state.runtimeSequence}`);
     if (state.activeTaskId !== taskId) return;
     for (const event of runtime.events || []) {
@@ -301,7 +319,7 @@ function renderEmptyDetail(errorMessage) {
   const empty = node("div", "empty-workspace");
   empty.appendChild(node("div", "empty-symbol", "AL"));
   empty.appendChild(node("h2", "", errorMessage ? "任务暂不可用" : "选择一个任务"));
-  empty.appendChild(node("p", "", errorMessage || "从左侧任务列表打开任务，查看当前阶段并执行下一步。"));
+  if (errorMessage) empty.appendChild(node("p", "", errorMessage));
   pane.appendChild(empty);
 }
 function buildAnswerMap(detail, review) {
@@ -320,24 +338,41 @@ function buildAnswerMap(detail, review) {
     }
   }
 }
-function card(title, description) {
+function card(title) {
   const section = node("section", "content-card");
   if (title) section.appendChild(node("h3", "", title));
-  if (description) section.appendChild(node("p", "card-description", description));
   return section;
 }
-function infoGrid(items) {
-  const grid = node("div", "settings-summary");
+function facts(items) {
+  const list = node("dl", "facts");
   for (const [label, value] of items) {
-    const cell = node("div", "info-cell");
-    cell.appendChild(node("div", "info-cell-label", label));
-    cell.appendChild(node("div", "info-cell-value", value));
-    grid.appendChild(cell);
+    const item = node("div", "fact");
+    item.appendChild(node("dt", "", label));
+    item.appendChild(node("dd", "", value));
+    list.appendChild(item);
   }
-  return grid;
+  return list;
 }
+function statusLine(tone, text) {
+  const line = node("div", `status-line ${tone}`);
+  line.append(node("span", "dot"), node("span", "", text));
+  return line;
+}
+function actionRow() { return node("div", "action-bar"); }
 function actionButton(label, handler, variant = "primary") {
   const button = node("button", `button button-${variant}`, label);
+  button.type = "button";
+  button.addEventListener("click", handler);
+  return button;
+}
+function addPageAction(row, label, handler, variant = "primary", disabled = false) {
+  const button = actionButton(label, handler, variant);
+  button.disabled = disabled;
+  row.appendChild(button);
+  return button;
+}
+function linkButton(label, handler, danger = false) {
+  const button = node("button", `link-button${danger ? " danger" : ""}`, label);
   button.type = "button";
   button.addEventListener("click", handler);
   return button;
@@ -349,37 +384,42 @@ function renderDetail() {
   clear(pane);
   const header = node("header", "detail-header");
   const heading = node("div", "detail-title-wrap");
-  heading.appendChild(node("p", "eyebrow", "TASK WORKSPACE"));
   heading.appendChild(node("h2", "detail-title", task.title));
-  const subtitle = node("div", "detail-subtitle");
-  subtitle.appendChild(statusBadge(task));
-  subtitle.appendChild(node("span", "", siteLabel(task.site_id)));
-  subtitle.appendChild(node("span", "", `更新 ${formatTime(task.updated_at)}`));
-  heading.appendChild(subtitle);
+  const meta = node("div", "detail-meta");
+  meta.appendChild(statusBadge(task));
+  meta.appendChild(node("span", "", siteLabel(task.site_id)));
+  meta.appendChild(node("span", "", `更新 ${formatTime(task.updated_at)}`));
+  heading.appendChild(meta);
   header.appendChild(heading);
-  const headerActions = node("div", "detail-header-actions");
-  headerActions.appendChild(actionButton("刷新", () => refreshDetail(true), "secondary"));
-  header.appendChild(headerActions);
+  const refresh = node("button", "icon-button", "↻");
+  refresh.type = "button";
+  refresh.title = "刷新";
+  refresh.setAttribute("aria-label", "刷新任务详情");
+  refresh.addEventListener("click", () => refreshDetail(true));
+  header.appendChild(refresh);
   pane.appendChild(header);
-  const status = node("section", "hero-status");
-  const statusMain = node("div", "hero-status-main");
-  statusMain.appendChild(statusBadge(task));
-  statusMain.appendChild(node("strong", "hero-status-label", WIZARD_LABELS[state.wizardStep] || STEP_LABELS[task.current_step] || task.current_step));
-  status.appendChild(statusMain);
-  if (task.last_safe_error_category) status.appendChild(node("div", "hero-status-detail", `最近的安全错误分类：${task.last_safe_error_category}`));
-  if (task.queue_state === "queued" && task.queue_position) status.appendChild(node("div", "hero-status-detail", `队列位置：第 ${task.queue_position} 位。`));
-  pane.appendChild(status);
   syncWizardStep(task);
   pane.appendChild(renderStepper(task));
-  pane.appendChild(renderWizardPage(task));
+  const alert = renderDetailAlert(task);
+  if (alert) pane.appendChild(alert);
+  const page = renderWizardPage(task);
+  if (page) pane.appendChild(page);
   pane.appendChild(renderWizardNav(task));
-  if (state.detail.queue) {
-    const queue = card("当前串行操作", "后端一次只执行一个耗时操作。");
-    queue.appendChild(infoGrid([["操作", state.detail.queue.operation], ["状态", state.detail.queue.state], ["队列位置", state.detail.queue.queue_position || "-"], ["允许覆盖", state.detail.queue.overwrite_result ? "是" : "否"]]));
-    pane.appendChild(queue);
-  }
+  const queue = renderQueueLine();
+  if (queue) pane.appendChild(queue);
   pane.appendChild(renderEventCard());
   pane.appendChild(renderManagementCard(task));
+}
+function renderDetailAlert(task) {
+  if (task.queue_state === "queued" && task.queue_position) return statusLine("warning", `队列第 ${task.queue_position} 位`);
+  return null;
+}
+function renderQueueLine() {
+  const queue = state.detail.queue;
+  if (!queue) return null;
+  const line = node("div", "queue-line");
+  line.append(node("span", "dot"), node("span", "", [queue.operation, queue.state, queue.queue_position ? `第 ${queue.queue_position} 位` : null, queue.overwrite_result ? "允许覆盖" : null].filter(Boolean).join(" · ")));
+  return line;
 }
 function wizardIndex(step) { return WIZARD_STEP_IDS.indexOf(step); }
 function stepFromTaskStep(step) {
@@ -424,12 +464,6 @@ function isTaskBusy(task) {
   return state.busy || Boolean(task.queue_state) || ["authenticating", "crawling", "solving", "filling", "submitting", "cancelling"].includes(task.status);
 }
 function cookieReady() { return Boolean(state.cookieStatus.captured && state.cookieStatus.configured); }
-function addPageAction(section, label, handler, variant = "primary", disabled = false) {
-  const button = actionButton(label, handler, variant);
-  button.disabled = disabled;
-  section.appendChild(button);
-  return button;
-}
 function renderStepper(task) {
   const stepper = node("div", "stepper");
   const selectedIndex = wizardIndex(state.wizardStep);
@@ -453,73 +487,66 @@ function renderWizardPage(task) {
   return renderSubmitConfirmationPage(task);
 }
 function renderAuthenticationPage(task) {
-  const section = card("登录验证", "先在本机浏览器完成登录并抓取 Cookie。每次抓取都会打开一个全新的浏览器，不保留上次的登录状态。只有检测到本任务的 Cookie 已抓取且当前配置可用，下一步才会开放。");
-  section.appendChild(infoGrid([
-    ["任务状态", STATUS_LABELS[task.status] || task.status],
-    ["Cookie 是否已抓取", state.cookieStatus.captured ? "是" : "否"],
-    ["当前 Cookie 配置", state.cookieStatus.configured ? "可用" : "缺失"]
-  ]));
-  if (isTaskBusy(task) && task.last_operation === "authenticate") {
-    section.appendChild(node("div", "notice info", "正在打开登录页面并等待认证完成。"));
-    addPageAction(section, "停止登录验证", () => stopTask(task), "quiet");
+  const section = card();
+  const busy = isTaskBusy(task) && task.last_operation === "authenticate";
+  if (busy) {
+    section.appendChild(statusLine("info", "正在浏览器中等待登录"));
   } else if (task.status === "failed" && task.last_operation === "authenticate") {
-    section.appendChild(node("div", "notice danger", "上次登录验证失败，可以重新抓取 Cookie。"));
-    addPageAction(section, "重试抓取 Cookie", () => runAction(() => api(`/api/tasks/${task.task_id}/authenticate`, { method: "POST", body: { retry_failed: true } }), "已重试登录验证。"));
-  } else {
-    const label = state.cookieStatus.captured ? "更新登录验证" : "抓取 Cookie";
-    addPageAction(section, label, () => runAction(() => api(`/api/tasks/${task.task_id}/authenticate`, { method: "POST", body: {} }), "已加入登录验证队列。"));
-    if (!state.cookieStatus.captured && task.status === "draft") addPageAction(section, "修改任务设置", openEditTask, "secondary");
-  }
-  if (state.cookieStatus.captured && !state.cookieStatus.configured) {
-    section.appendChild(node("div", "notice warning", "任务记录显示抓取过 Cookie，但当前配置中没有可用 Cookie；请重新抓取。"));
+    section.appendChild(statusLine("danger", "上次登录验证失败"));
+  } else if (task.status === "failed" && task.last_operation === "crawl" && !task.run_id) {
+    section.appendChild(statusLine("warning", "上次抓取失败 · 需重新抓取 Cookie"));
+  } else if (state.cookieStatus.captured && state.cookieStatus.configured) {
+    section.appendChild(statusLine("success", "Cookie 已就绪"));
   } else if (state.cookieStatus.captured) {
-    section.appendChild(node("div", "notice success", "本任务已完成 Cookie 抓取，可以进入下一步抓取题目。"));
+    section.appendChild(statusLine("warning", "Cookie 记录存在，当前配置不可用"));
   } else {
-    section.appendChild(node("div", "notice info", "此任务尚未抓取 Cookie，请先点击“抓取 Cookie”。"));
+    section.appendChild(statusLine("info", "尚未抓取 Cookie"));
   }
+  const row = actionRow();
+  if (busy) {
+    addPageAction(row, "停止登录验证", () => stopTask(task), "quiet");
+  } else if (task.status === "failed") {
+    addPageAction(row, state.cookieStatus.captured ? "重新抓取 Cookie" : "抓取 Cookie", () => startAuthentication(task, true));
+  } else {
+    addPageAction(row, state.cookieStatus.captured ? "更新登录验证" : "抓取 Cookie", () => startAuthentication(task, false));
+    if (task.status === "draft") addPageAction(row, "任务设置", openEditTask, "secondary");
+  }
+  section.appendChild(row);
   return section;
 }
 function renderCrawlPage(task) {
-  const section = card("抓取题目", "确认 Cookie 后，本页只负责抓取题目和图片；Cookie 操作请返回上一步。");
-  section.appendChild(infoGrid([
-    ["Cookie", cookieReady() ? "可用" : "未准备好"],
-    ["题包", task.run_id || "尚未生成"]
-  ]));
+  const section = card();
+  const ready = cookieReady();
+  section.appendChild(facts([["Cookie", ready ? "可用" : "未就绪"], ["题包", task.run_id || "尚未生成"]]));
+  const row = actionRow();
   if (isTaskBusy(task) && task.last_operation === "crawl") {
-    section.appendChild(node("div", "notice info", "正在请求页面并生成题包。"));
-    addPageAction(section, "停止抓取", () => stopTask(task), "quiet");
+    addPageAction(row, "停止抓取", () => stopTask(task), "quiet");
   } else if (task.status === "failed" && task.last_operation === "crawl") {
-    section.appendChild(node("div", "notice danger", "上次抓取失败，可以重试。"));
-    addPageAction(section, "重试抓取题目", () => runAction(() => api(`/api/tasks/${task.task_id}/crawl`, { method: "POST", body: { retry_failed: true } }), "已重试抓取。"), "primary", !cookieReady());
-  } else if (task.run_id) {
-    section.appendChild(node("div", "notice success", `题包已生成：${task.run_id}`));
-  } else {
-    section.appendChild(node("div", "notice info", "登录验证完成后，点击下面的按钮抓取题目。"));
-    addPageAction(section, "抓取题目", () => runAction(() => api(`/api/tasks/${task.task_id}/crawl`, { method: "POST", body: { retry_failed: false } }), "已加入抓取队列。"), "primary", !cookieReady());
+    addPageAction(row, "重试抓取", () => runAction(() => api(`/api/tasks/${task.task_id}/crawl`, { method: "POST", body: { retry_failed: true } }), "已重试抓取。"), "primary", !ready);
+  } else if (!task.run_id) {
+    addPageAction(row, "抓取题目", () => runAction(() => api(`/api/tasks/${task.task_id}/crawl`, { method: "POST", body: { retry_failed: false } }), "已加入抓取队列。"), "primary", !ready);
   }
+  if (row.childElementCount) section.appendChild(row);
   return section;
 }
-function renderPackageReviewPage(task) {
+function renderPackageReviewPage() {
   if (state.review) return renderReviewCard(false);
-  const section = card("检查题包", "题包尚未读取完成。");
-  section.appendChild(node("div", state.reviewError ? "notice danger" : "notice info", state.reviewError || "正在读取题目和附件，请稍后刷新。"));
+  const section = card();
+  section.appendChild(statusLine(state.reviewError ? "danger" : "info", state.reviewError || "正在读取题目与附件"));
   return section;
 }
 function renderModelAuthorizationPage(task) {
-  const section = card("模型授权", "选择本次任务使用的模型档案。点击下一步后会显示题目数量、图片数量和目标服务，确认后才开始解题。");
+  const section = card();
   const profile = state.profiles.find((item) => item.profile_id === task.model_profile_id);
-  const label = node("label", "", "模型档案");
   const select = node("select");
-  select.appendChild(new Option("请选择模型档案", ""));
+  select.setAttribute("aria-label", "模型档案");
+  select.appendChild(new Option("选择模型档案", ""));
   for (const item of state.profiles) select.appendChild(new Option(`${item.name} · v${item.version}`, item.profile_id));
   select.value = profile ? profile.profile_id : "";
   select.disabled = task.status === "waiting_model_authorization";
   select.addEventListener("change", () => changeTaskModelProfile(task, select.value));
-  label.appendChild(select);
-  section.appendChild(label);
-  if (!profile) section.appendChild(node("div", "notice warning", "请选择有效的模型档案后才能继续。"));
-  else section.appendChild(node("div", "notice success", `将使用：${profile.name} · ${profile.settings.model || "未命名模型"}`));
-  if (state.review) section.appendChild(infoGrid([["题目数量", `${state.review.questions.length} 题`], ["题包", task.run_id || "-"]]));
+  section.appendChild(select);
+  if (!profile) section.appendChild(statusLine("warning", "尚未选择模型档案"));
   return section;
 }
 function renderSolveProgress() {
@@ -541,49 +568,51 @@ function renderSolveProgress() {
   fill.style.width = `${percent}%`;
   track.appendChild(fill);
   wrapper.append(heading, track);
-  if (latest?.question_count) wrapper.appendChild(node("div", "form-hint", `题目数量：${latest.question_count}`));
   return wrapper;
 }
 function renderSolvePage(task) {
-  const section = card("AI 解题", "本页不需要操作。解题完成后会自动进入答案复核。");
-  section.appendChild(renderSolveProgress());
-  section.appendChild(infoGrid([["状态", STATUS_LABELS[task.status] || task.status], ["题包", task.run_id || "-"]]));
-  if (task.status === "failed" && task.last_operation === "solve") {
-    section.appendChild(node("div", "notice danger", "上次解题失败，可以重新授权并覆盖已有答案。"));
-    addPageAction(section, "重新授权解题", () => requestModelAuthorization(task, { retry_failed: true, overwrite_existing_result: true }));
-  } else if (isTaskBusy(task)) {
-    addPageAction(section, "停止解题", () => stopTask(task), "quiet");
+  const section = card();
+  const failed = task.status === "failed" && task.last_operation === "solve";
+  if (failed) {
+    section.appendChild(statusLine("danger", "上次解题失败"));
   } else {
-    section.appendChild(node("div", "notice info", "解题任务正在队列中或已准备自动进入下一步。"));
+    section.appendChild(renderSolveProgress());
   }
+  const row = actionRow();
+  if (failed) addPageAction(row, "重新授权解题", () => requestModelAuthorization(task, { retry_failed: true, overwrite_existing_result: true }));
+  else if (isTaskBusy(task)) addPageAction(row, "停止解题", () => stopTask(task), "quiet");
+  if (row.childElementCount) section.appendChild(row);
   return section;
 }
 function renderAnswerReviewPage(task) {
+  const section = card();
   if (["ready_for_interaction", "filling"].includes(task.status)) {
-    const section = card("复核答案", "答案已确认，正在填写网页。此步骤不单独显示填写页面，完成后会自动进入提交确认。");
     section.appendChild(renderFillingProgress(task));
-    if (task.status === "filling") addPageAction(section, "停止填写", () => stopTask(task), "quiet");
+    if (task.status === "filling") {
+      const row = actionRow();
+      addPageAction(row, "停止填写", () => stopTask(task), "quiet");
+      section.appendChild(row);
+    }
     return section;
   }
   if (["filled_unsubmitted", "unconfirmed", "needs_inspection"].includes(task.status) || (task.status === "failed" && task.last_operation === "interact")) {
-    const section = card("复核答案", "上次填写结果需要检查，检查网页后可以重新填写。");
-    addPageAction(section, "我已检查，重新填写", () => retryInteraction(task));
+    section.appendChild(statusLine("warning", "上次填写需检查网页后重新填写"));
+    const row = actionRow();
+    addPageAction(row, "我已检查，重新填写", () => retryInteraction(task));
+    section.appendChild(row);
     return section;
   }
   if (!state.review) {
-    const section = card("复核答案", "答案尚未读取完成。");
-    section.appendChild(node("div", state.reviewError ? "notice danger" : "notice info", state.reviewError || "正在读取答案，请稍后刷新。"));
+    section.appendChild(statusLine(state.reviewError ? "danger" : "info", state.reviewError || "正在读取答案"));
     return section;
   }
   const wrap = node("div", "wizard-page-stack");
   wrap.appendChild(renderReviewCard(true));
-  const actions = card("答案操作", "保存并校验后，点击下一步开始填写网页。");
-  const row = node("div", "action-bar");
-  const save = actionButton("保存并校验答案", saveReviewedAnswers, "secondary");
+  const row = actionRow();
+  const save = actionButton("保存并校验", saveReviewedAnswers, "secondary");
   save.disabled = task.status !== "answer_review" || task.queue_state !== null;
   row.appendChild(save);
-  actions.appendChild(row);
-  wrap.appendChild(actions);
+  wrap.appendChild(row);
   return wrap;
 }
 function renderFillingProgress(task) {
@@ -597,22 +626,31 @@ function renderFillingProgress(task) {
   return wrapper;
 }
 function renderSubmitConfirmationPage(task) {
-  const section = card("提交确认", "页面结构预检、填写和回显验证完成后，才会在这里出现一次性提交确认。");
+  const section = card();
   if (state.submitPending) {
-    section.appendChild(infoGrid([["题包", state.submitPending.run_id], ["题目数量", state.submitPending.question_count], ["有效期", formatTime(state.submitPending.expires_at)]]));
-    section.appendChild(node("div", "notice warning", "确认后仍会重新检查网页上的提交控件；取消、超时或错配不会提交。"));
-    addPageAction(section, "打开提交确认", () => showSubmitConfirmation(state.submitPending));
-  } else if (task.status === "submitting") {
-    section.appendChild(node("div", "notice info", "已确认提交，正在等待网站页面结果。"));
-  } else if (task.status === "cancelling") {
-    section.appendChild(node("div", "notice warning", "正在等待安全停止，不会自动重试提交。"));
-  } else if (["filled_unsubmitted", "confirmed", "failed", "unconfirmed", "cancelled", "needs_inspection", "archived"].includes(task.status)) {
-    section.appendChild(infoGrid([["最终状态", STATUS_LABELS[task.status] || task.status], ["题包", task.run_id || "-"]]));
-    if (["filled_unsubmitted", "unconfirmed", "needs_inspection"].includes(task.status)) addPageAction(section, "我已检查，重新填写", () => retryInteraction(task), "secondary");
-  } else {
-    section.appendChild(node("div", "notice info", "正在等待填写步骤完成。"));
+    section.appendChild(facts([["题包", state.submitPending.run_id], ["题目", `${state.submitPending.question_count} 题`], ["有效期", formatTime(state.submitPending.expires_at)]]));
+    section.appendChild(statusLine("warning", "提交前会重新核验页面控件"));
+    const row = actionRow();
+    addPageAction(row, "打开提交确认", () => showSubmitConfirmation(state.submitPending));
+    section.appendChild(row);
+    return section;
   }
-  return section;
+  if (task.status === "submitting") {
+    section.appendChild(statusLine("info", "已确认提交，等待网站返回结果"));
+  } else if (task.status === "cancelling") {
+    section.appendChild(statusLine("warning", "正在等待安全停止"));
+  } else if (["filled_unsubmitted", "confirmed", "failed", "unconfirmed", "cancelled", "needs_inspection", "archived"].includes(task.status)) {
+    if (task.run_id) section.appendChild(facts([["题包", task.run_id]]));
+    if (["filled_unsubmitted", "unconfirmed", "needs_inspection"].includes(task.status)) {
+      const row = actionRow();
+      addPageAction(row, "我已检查，重新填写", () => retryInteraction(task), "secondary");
+      if (!section.childElementCount) return row;
+      section.appendChild(row);
+    }
+  } else {
+    section.appendChild(statusLine("info", "等待填写步骤完成"));
+  }
+  return section.childElementCount ? section : null;
 }
 function canAdvanceWizard(task) {
   const selectedIndex = wizardIndex(state.wizardStep);
@@ -628,11 +666,8 @@ function canAdvanceWizard(task) {
   return false;
 }
 function nextButtonLabel(task) {
-  if (state.wizardStep === "authentication") return "下一步：抓取题目";
-  if (state.wizardStep === "crawl") return "下一步：检查题包";
-  if (state.wizardStep === "package_review") return "下一步：模型授权";
-  if (state.wizardStep === "model_authorization") return "下一步：授权并解题";
-  if (state.wizardStep === "solve") return "等待 AI 解题完成";
+  if (state.wizardStep === "model_authorization") return "授权并解题";
+  if (state.wizardStep === "solve") return "等待解题完成";
   if (state.wizardStep === "answer_review") return "填写答案";
   if (state.wizardStep === "submit_confirmation") return state.submitPending ? "打开提交确认" : "等待提交确认";
   return "下一步";
@@ -640,11 +675,10 @@ function nextButtonLabel(task) {
 function renderWizardNav(task) {
   const selectedIndex = wizardIndex(state.wizardStep);
   const section = node("section", "wizard-nav");
-  const previous = actionButton("上一步", () => handleWizardPrevious(task), "secondary");
+  const previous = actionButton("上一步", () => handleWizardPrevious(task), "quiet");
   previous.disabled = selectedIndex <= 0 || state.wizardStep === "submit_confirmation" || isTaskBusy(task);
   const next = actionButton(nextButtonLabel(task), () => handleWizardNext(task), "primary");
   next.disabled = !canAdvanceWizard(task);
-  next.title = next.disabled ? "完成当前页面任务后才能进入下一步" : "";
   section.append(previous, next);
   return section;
 }
@@ -733,7 +767,7 @@ function renderReviewCard(editableOverride) {
   const editable = editableOverride === undefined
     ? task.status === "answer_review" || (task.status === "ready_for_interaction" && task.interaction_retry_authorized)
     : Boolean(editableOverride);
-  const section = card(`题目与答案 · ${review.questions.length} 题`, editable ? "答案只写回当前题包的 answers.json。保存前会按适配器 Schema 和引用关系重新校验。" : "当前阶段可查看题包，答案编辑将在解题完成后开放。");
+  const section = card(`题目与答案 · ${review.questions.length} 题`);
   const list = node("div", "question-list");
   review.questions.forEach((question) => list.appendChild(renderQuestion(question, editable)));
   section.appendChild(list);
@@ -746,7 +780,8 @@ function renderQuestion(question, editable) {
   heading.appendChild(node("span", "question-type", question.source_type || question.question_type));
   item.appendChild(heading);
   item.appendChild(node("div", "question-stem", question.stem.text || "（无文字题干，请查看附件）"));
-  item.appendChild(renderAssets(question.stem.assets));
+  const stemAssets = renderAssets(question.stem.assets);
+  if (stemAssets) item.appendChild(stemAssets);
   item.appendChild(editable ? renderAnswerEditor(question, editable) : renderQuestionOptions(question));
   return item;
 }
@@ -757,14 +792,16 @@ function renderQuestionOptions(question) {
     row.appendChild(node("span", "slot-label", option.label || ""));
     row.appendChild(node("div", "", option.content?.text || "（图片选项）"));
     wrapper.appendChild(row);
-    wrapper.appendChild(renderAssets(option.content?.assets || []));
+    const optionAssets = renderAssets(option.content?.assets || []);
+    if (optionAssets) wrapper.appendChild(optionAssets);
   }
   if (!(question.options || []).length) wrapper.appendChild(node("p", "form-hint", "此题没有选项。"));
   return wrapper;
 }
 function renderAssets(assets) {
+  if (!assets || !assets.length) return null;
   const grid = node("div", "asset-grid");
-  for (const source of assets || []) {
+  for (const source of assets) {
     const image = node("img");
     image.src = source;
     image.alt = "题目附件";
@@ -783,7 +820,9 @@ function renderAnswerEditor(question, editable) {
       const input = node("input"); input.type = "radio"; input.name = `answer_${question.question_id}`; input.value = option.option_id; input.checked = answer.value === option.option_id;
       input.addEventListener("change", () => { answer.value = option.option_id; });
       const label = node("label", "", `${option.label}. ${option.content.text || "（图片选项）"}`);
-      row.append(input, label); wrapper.appendChild(row); wrapper.appendChild(renderAssets(option.content.assets));
+      row.append(input, label); wrapper.appendChild(row);
+      const assets = renderAssets(option.content.assets);
+      if (assets) wrapper.appendChild(assets);
     }
   } else if (question.question_type === "multiple_choice") {
     for (const option of question.options) {
@@ -791,7 +830,9 @@ function renderAnswerEditor(question, editable) {
       const input = node("input"); input.type = "checkbox"; input.value = option.option_id; input.checked = answer.values.has(option.option_id);
       input.addEventListener("change", () => { if (input.checked) answer.values.add(option.option_id); else answer.values.delete(option.option_id); });
       const label = node("label", "", `${option.label}. ${option.content.text || "（图片选项）"}`);
-      row.append(input, label); wrapper.appendChild(row); wrapper.appendChild(renderAssets(option.content.assets));
+      row.append(input, label); wrapper.appendChild(row);
+      const assets = renderAssets(option.content.assets);
+      if (assets) wrapper.appendChild(assets);
     }
   } else if (question.question_type === "fill_blank") {
     for (const slot of question.answer_slots) {
@@ -872,7 +913,7 @@ async function requestModelAuthorization(task, extraOptions) {
 function showModelAuthorization(summary) {
   state.modelAuthorizationId = summary.task_id;
   const panel = el("modelAuthorizationSummary"); clear(panel);
-  const rows = [["任务", summary.task_id], ["题包", summary.run_id], ["模型档案", `${summary.profile_name} · v${summary.profile_version}`], ["服务类型", summary.provider || "未指定"], ["模型", summary.model], ["服务主机", summary.service_host], ["请求目的地", summary.service_destination], ["题目数量", summary.question_count], ["图片附件", summary.image_count]];
+  const rows = [["模型档案", `${summary.profile_name} · v${summary.profile_version}`], ["模型", summary.model], ["请求目的地", summary.service_destination], ["题目数量", summary.question_count], ["图片附件", summary.image_count]];
   for (const [label, value] of rows) { const row = node("div", "summary-row"); row.append(node("span", "", label), node("span", "", value)); panel.appendChild(row); }
   openDialog("modelAuthorizationDialog");
   el("confirmModelAuthorization").onclick = () => respondModelAuthorization(true);
@@ -888,7 +929,7 @@ function showSubmitConfirmation(pending) {
   if (state.confirmationId === pending.confirmation_id) return;
   state.confirmationId = pending.confirmation_id;
   const panel = el("submitConfirmationSummary"); clear(panel);
-  const rows = [["任务", pending.task_id], ["题包", pending.run_id], ["站点", siteLabel(pending.site_id)], ["题目数量", pending.question_count], ["确认有效期", formatTime(pending.expires_at)]];
+  const rows = [["题包", pending.run_id], ["站点", siteLabel(pending.site_id)], ["题目数量", pending.question_count], ["确认有效期", formatTime(pending.expires_at)]];
   for (const [label, value] of rows) { const row = node("div", "summary-row"); row.append(node("span", "", label), node("span", "", value)); panel.appendChild(row); }
   openDialog("submitConfirmationDialog");
   el("confirmSubmitConfirmation").onclick = () => respondSubmitConfirmation("confirm");
@@ -906,9 +947,10 @@ async function respondSubmitConfirmation(decision) {
   } catch (error) { toast(error.message, "error"); }
 }
 function renderEventCard() {
-  const section = card("事件记录", "只显示安全状态，不包含 Cookie、密钥、完整 URL 或答案正文。");
-  const list = node("div", "event-list");
   const events = [...(state.detail.events || [])].reverse().slice(-20);
+  const details = node("details", "disclosure");
+  details.appendChild(node("summary", "", `事件记录 · ${events.length}`));
+  const list = node("div", "event-list");
   for (const event of events) {
     const row = node("div", "event-row");
     row.appendChild(node("div", "event-time", formatTime(event.occurred_at)));
@@ -916,15 +958,15 @@ function renderEventCard() {
     list.appendChild(row);
   }
   if (!events.length) list.appendChild(node("p", "form-hint", "暂无事件记录。"));
-  section.appendChild(list); return section;
+  details.appendChild(list);
+  return details;
 }
 function renderManagementCard(task) {
-  const section = card("任务管理", "归档不会删除题包。永久删除会同时移除数据库记录和关联题包，无法从页面恢复。");
-  const actions = node("div", "action-bar secondary-actions");
-  if (task.status === "draft" && !task.run_id) actions.appendChild(actionButton("删除草稿", () => deleteTask(task, "draft"), "quiet"));
-  actions.appendChild(actionButton("归档任务", () => archiveTask(task), "quiet"));
-  if (task.run_id) actions.appendChild(actionButton("永久删除任务和题包", () => deleteTask(task, "package"), "danger"));
-  section.appendChild(actions); return section;
+  const footer = node("footer", "task-footer");
+  footer.appendChild(linkButton("归档任务", () => archiveTask(task)));
+  if (task.run_id) footer.appendChild(linkButton("永久删除", () => deleteTask(task, "package"), true));
+  else footer.appendChild(linkButton("删除草稿", () => deleteTask(task, "draft"), true));
+  return footer;
 }
 async function archiveTask(task) {
   if (!window.confirm("确认归档此任务？归档不会删除题包，可在任务库中保留记录。")) return;
