@@ -40,7 +40,7 @@ const state = {
   editTaskId: null, busy: false, shuttingDown: false,
   cookieStatus: { captured: false, configured: false }, submitPending: null, authenticationHint: null,
   wizardTaskId: null, wizardStep: null, wizardDerivedStep: null,
-  runtimeEvents: [], runtimeSequence: 0
+  runtimeEvents: [], runtimeSequence: 0, taskListSignature: null
 };
 
 function el(id) { return document.getElementById(id); }
@@ -179,7 +179,6 @@ function renderProfileOptions() {
 }
 function renderTaskList() {
   const list = el("taskList");
-  clear(list);
   const search = el("taskSearch").value.trim().toLowerCase();
   const site = el("siteFilter").value;
   const status = el("statusFilter").value;
@@ -189,22 +188,114 @@ function renderTaskList() {
     if (!search) return true;
     return `${task.title} ${task.site_id} ${siteLabel(task.site_id)}`.toLowerCase().includes(search);
   });
+  const signature = tasks
+    .map((task) => [task.task_id, task.status, task.title, task.site_id, task.updated_at, task.queue_state, task.queue_position].join("\u0001"))
+    .join("\u0002");
+  if (signature === state.taskListSignature && list.childElementCount) {
+    for (const card of list.querySelectorAll(".task-card")) {
+      card.classList.toggle("selected", card.dataset.taskId === state.activeTaskId);
+    }
+    return;
+  }
+  state.taskListSignature = signature;
+  closeTaskMenu();
+  clear(list);
   for (const task of tasks) {
-    const card = node("button", "task-card");
-    card.type = "button";
+    const card = node("div", "task-card");
+    card.dataset.taskId = task.task_id;
     if (task.task_id === state.activeTaskId) card.classList.add("selected");
-    const top = node("div", "task-card-top");
+    const main = node("button", "task-card-main");
+    main.type = "button";
+    const top = node("span", "task-card-top");
     top.appendChild(node("span", "task-card-title", task.title));
     top.appendChild(statusBadge(task));
-    const meta = node("div", "task-card-meta");
+    const meta = node("span", "task-card-meta");
     meta.appendChild(node("span", "", siteLabel(task.site_id)));
     meta.appendChild(node("span", "", WIZARD_LABELS[wizardStepForTask(task)] || STEP_LABELS[task.current_step] || task.current_step));
     meta.appendChild(node("span", "", formatTime(task.updated_at)));
-    card.append(top, meta);
-    card.addEventListener("click", () => selectTask(task.task_id));
+    main.append(top, meta);
+    main.addEventListener("click", () => selectTask(task.task_id));
+    const menuButton = node("button", "task-card-menu");
+    menuButton.type = "button";
+    menuButton.setAttribute("aria-label", `任务操作：${task.title}`);
+    menuButton.setAttribute("aria-haspopup", "menu");
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.appendChild(kebabIcon());
+    menuButton.addEventListener("click", (event) => { event.stopPropagation(); openTaskMenu(task, menuButton); });
+    card.append(main, menuButton);
     list.appendChild(card);
   }
   if (!tasks.length) list.appendChild(node("p", "form-hint", "没有匹配的任务。"));
+}
+function kebabIcon() {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  for (const cx of ["3", "8", "13"]) {
+    const dot = document.createElementNS(namespace, "circle");
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", "8");
+    dot.setAttribute("r", "1.35");
+    dot.setAttribute("fill", "currentColor");
+    svg.appendChild(dot);
+  }
+  return svg;
+}
+let taskMenu = null;
+let taskMenuTaskId = null;
+function closeTaskMenu() {
+  document.querySelectorAll(".task-card-menu[aria-expanded=true]").forEach((button) => button.setAttribute("aria-expanded", "false"));
+  if (!taskMenu) return;
+  taskMenu.remove();
+  taskMenu = null;
+  taskMenuTaskId = null;
+  document.removeEventListener("pointerdown", onTaskMenuPointerDown, true);
+  document.removeEventListener("keydown", onTaskMenuKeyDown, true);
+}
+function onTaskMenuPointerDown(event) {
+  if (taskMenu && !taskMenu.contains(event.target)) closeTaskMenu();
+}
+function onTaskMenuKeyDown(event) {
+  if (event.key === "Escape") closeTaskMenu();
+}
+function openTaskMenu(task, anchor) {
+  const reopen = taskMenuTaskId === task.task_id;
+  closeTaskMenu();
+  if (reopen) return;
+  const busy = Boolean(task.queue_state);
+  const menu = node("div", "task-menu");
+  menu.setAttribute("role", "menu");
+  const archive = node("button", "", "归档任务");
+  archive.type = "button";
+  archive.setAttribute("role", "menuitem");
+  archive.disabled = busy || task.status === "archived";
+  archive.title = busy ? "有等待或运行中的操作，暂不能归档" : "";
+  archive.addEventListener("click", () => { closeTaskMenu(); archiveTask(task); });
+  const remove = node("button", "danger", task.run_id ? "删除任务与题包" : "删除任务");
+  remove.type = "button";
+  remove.setAttribute("role", "menuitem");
+  remove.disabled = busy;
+  remove.title = busy ? "有等待或运行中的操作，暂不能删除" : "";
+  remove.addEventListener("click", () => { closeTaskMenu(); openDeleteTaskDialog(task); });
+  menu.append(archive, remove);
+  document.body.appendChild(menu);
+  const anchorBox = anchor.getBoundingClientRect();
+  const menuBox = menu.getBoundingClientRect();
+  const top = anchorBox.bottom + menuBox.height + 10 > window.innerHeight
+    ? Math.max(10, anchorBox.top - menuBox.height - 6)
+    : anchorBox.bottom + 6;
+  const left = Math.max(10, Math.min(anchorBox.right - menuBox.width, window.innerWidth - menuBox.width - 10));
+  menu.style.top = `${top}px`;
+  menu.style.left = `${left}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  taskMenu = menu;
+  taskMenuTaskId = task.task_id;
+  document.addEventListener("pointerdown", onTaskMenuPointerDown, true);
+  document.addEventListener("keydown", onTaskMenuKeyDown, true);
 }
 function renderQueueSummary() {
   const summary = el("queueSummary");
@@ -221,7 +312,12 @@ async function refreshOverview() {
   if (state.shuttingDown || state.overviewRefreshing) return;
   state.overviewRefreshing = true;
   try {
-    const [overview, profiles] = await Promise.all([api("/api/overview"), api("/api/profiles")]);
+    // 只有把状态筛选切到「已归档」时才把归档任务一起取回来
+    const withArchived = el("statusFilter").value === "archived";
+    const [overview, profiles] = await Promise.all([
+      api(`/api/overview${withArchived ? "?include_archived=true" : ""}`),
+      api("/api/profiles")
+    ]);
     state.tasks = overview.tasks;
     state.queue = overview.queue;
     state.profiles = profiles.profiles;
@@ -371,12 +467,6 @@ function addPageAction(row, label, handler, variant = "primary", disabled = fals
   row.appendChild(button);
   return button;
 }
-function linkButton(label, handler, danger = false) {
-  const button = node("button", `link-button${danger ? " danger" : ""}`, label);
-  button.type = "button";
-  button.addEventListener("click", handler);
-  return button;
-}
 function renderDetail() {
   if (!state.detail) return;
   const task = state.detail.task;
@@ -408,7 +498,6 @@ function renderDetail() {
   const queue = renderQueueLine();
   if (queue) pane.appendChild(queue);
   pane.appendChild(renderEventCard());
-  pane.appendChild(renderManagementCard(task));
 }
 function renderDetailAlert(task) {
   if (task.queue_state === "queued" && task.queue_position) return statusLine("warning", `队列第 ${task.queue_position} 位`);
@@ -961,34 +1050,61 @@ function renderEventCard() {
   details.appendChild(list);
   return details;
 }
-function renderManagementCard(task) {
-  const footer = node("footer", "task-footer");
-  footer.appendChild(linkButton("归档任务", () => archiveTask(task)));
-  if (task.run_id) footer.appendChild(linkButton("永久删除", () => deleteTask(task, "package"), true));
-  else footer.appendChild(linkButton("删除草稿", () => deleteTask(task, "draft"), true));
-  return footer;
-}
 async function archiveTask(task) {
   if (!window.confirm("确认归档此任务？归档不会删除题包，可在任务库中保留记录。")) return;
   await runAction(() => api(`/api/tasks/${task.task_id}/archive`, { method: "POST", body: {} }), "任务已归档。");
 }
-async function deleteTask(task, mode) {
-  let body;
-  if (mode === "draft") {
-    if (!window.confirm("确认删除这个草稿？")) return;
-    body = { mode: "draft" };
-  } else {
-    const typed = window.prompt("永久删除会丢失题目、附件、答案、执行结果和任务记录。请输入 DELETE 确认：");
-    if (typed !== "DELETE") return;
-    body = { mode: "package", confirmation: "DELETE" };
+let deleteTarget = null;
+function openDeleteTaskDialog(task) {
+  const packageMode = Boolean(task.run_id);
+  deleteTarget = task;
+  el("deleteTaskHeading").textContent = packageMode ? "删除任务与题包" : "删除任务";
+  el("deleteTaskTitle").textContent = task.title;
+  const facts = el("deleteTaskFacts");
+  clear(facts);
+  const rows = [["站点", siteLabel(task.site_id)]];
+  if (packageMode) rows.push(["题包", task.run_id]);
+  else rows.push(["状态", STATUS_LABELS[task.status] || task.status]);
+  rows.push(["更新", formatTime(task.updated_at)]);
+  for (const [label, value] of rows) {
+    const row = node("div", "summary-row");
+    row.append(node("span", "", label), node("span", "", value));
+    facts.appendChild(row);
   }
+  el("deleteTaskWarning").textContent = packageMode
+    ? "题目、附件、答案、执行结果和任务记录会一并移除，无法恢复。"
+    : "该任务还没有题包，只会移除任务记录与状态历史，不涉及本机文件。";
+  el("deleteTaskConfirmRow").hidden = !packageMode;
+  const input = el("deleteTaskConfirmInput");
+  input.value = "";
+  const confirm = el("confirmDeleteTask");
+  confirm.textContent = packageMode ? "永久删除" : "删除任务";
+  confirm.disabled = packageMode;
+  input.oninput = () => { confirm.disabled = input.value.trim() !== "DELETE"; };
+  input.onkeydown = (event) => { if (event.key === "Enter" && !confirm.disabled) { event.preventDefault(); confirmDeleteTask(); } };
+  openDialog("deleteTaskDialog");
+  if (packageMode) setTimeout(() => input.focus(), 30);
+}
+async function confirmDeleteTask() {
+  const task = deleteTarget;
+  if (!task) return;
+  const packageMode = Boolean(task.run_id);
+  closeDialog("deleteTaskDialog");
+  deleteTarget = null;
   try {
-    await api(`/api/tasks/${task.task_id}`, { method: "DELETE", body });
-    toast(mode === "draft" ? "草稿已删除。" : "任务和题包已删除。", "success");
-    state.activeTaskId = null;
-    localStorage.removeItem("autolearn.activeTask");
+    await api(`/api/tasks/${task.task_id}`, {
+      method: "DELETE",
+      body: packageMode ? { mode: "package", confirmation: "DELETE" } : { mode: "record" }
+    });
+    toast(packageMode ? "任务与题包已删除。" : "任务已删除。", "success");
+    if (state.activeTaskId === task.task_id) {
+      state.activeTaskId = null;
+      state.detail = null;
+      localStorage.removeItem("autolearn.activeTask");
+      renderEmptyDetail();
+    }
     await refreshOverview();
-    renderEmptyDetail();
+    await refreshDetail();
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -1150,11 +1266,12 @@ function bindEvents() {
   el("testProfile").addEventListener("click", testProfileConnection);
   el("makeDefaultProfile").addEventListener("click", makeDefaultProfile);
   el("deleteProfile").addEventListener("click", deleteSelectedProfile);
+  el("confirmDeleteTask").addEventListener("click", confirmDeleteTask);
   el("shutdownService").addEventListener("click", shutdownService);
   el("refreshTasks").addEventListener("click", async () => { await refreshOverview(); await refreshDetail(true); });
   el("taskSearch").addEventListener("input", renderTaskList);
   el("siteFilter").addEventListener("change", renderTaskList);
-  el("statusFilter").addEventListener("change", renderTaskList);
+  el("statusFilter").addEventListener("change", async () => { await refreshOverview(); });
   document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => closeDialog(button.dataset.closeDialog)));
   el("submitConfirmationDialog").addEventListener("cancel", (event) => { event.preventDefault(); respondSubmitConfirmation("cancel"); });
 }

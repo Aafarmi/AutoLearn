@@ -2439,21 +2439,25 @@ class TaskStore:
             row, self._queue_position(connection, row["queue_id"], row["queue_state"])
         )
 
-    def delete_draft(self, task_id: str) -> None:
-        """Delete only a never-run draft; run packages are never deleted here."""
+    def delete_task_record(self, task_id: str) -> None:
+        """Delete a task that never produced a run package, whatever its status.
+
+        没有题包的任务（登录验证失败、抓取失败、空草稿等）只有数据库记录，
+        ``task_context`` / ``task_queue`` / ``task_events`` 由外键级联删除。
+        已经生成题包的任务必须走 ``delete_task_and_package``，避免只删记录、
+        把 runs 目录里的文件变成孤儿。
+        """
         task_id = _validate_id(task_id, "task_id")
         with self._transaction() as connection:
             task = self._read_task(connection, task_id)
-            if (
-                TaskStatus(task["status"]) != TaskStatus.DRAFT
-                or task["run_id"] is not None
-                or connection.execute(
-                    "SELECT 1 FROM task_queue WHERE task_id = ?", (task_id,)
-                ).fetchone()
-            ):
+            if task["run_id"] is not None:
                 raise TaskTransitionError(
-                    "只有尚未抓取且没有排队操作的草稿可以删除。"
+                    "此任务已生成题包，请按题包删除。"
                 )
+            if connection.execute(
+                "SELECT 1 FROM task_queue WHERE task_id = ?", (task_id,)
+            ).fetchone():
+                raise TaskTransitionError("等待、运行或恢复检查中的任务不能删除。")
             connection.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
 
     def delete_task_and_package(self, task_id: str) -> None:

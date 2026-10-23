@@ -10,14 +10,17 @@
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">AL</span>
-        <strong>AutoLearn</strong>
+      <div class="topbar-left">
+        <button id="shutdownService" class="button button-danger-quiet" type="button">关闭服务</button>
+        <span class="topbar-divider" aria-hidden="true"></span>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">AL</span>
+          <strong>AutoLearn</strong>
+        </div>
       </div>
       <div class="topbar-actions">
         <span id="serviceStatus" class="service-status" role="status">连接中</span>
         <button id="openSettings" class="button button-quiet" type="button">模型与设置</button>
-        <button id="shutdownService" class="button button-quiet" type="button">关闭服务</button>
         <button id="openNewTask" class="button button-primary" type="button">新建任务</button>
       </div>
     </header>
@@ -127,6 +130,21 @@
     <div class="dialog-actions">
       <button id="cancelSubmitConfirmation" class="button button-quiet" type="button">取消本次提交</button>
       <button id="confirmSubmitConfirmation" class="button button-danger" type="button">确认提交</button>
+    </div>
+  </dialog>
+
+  <dialog id="deleteTaskDialog" class="dialog dialog-danger">
+    <div class="dialog-heading">
+      <h2 id="deleteTaskHeading">删除任务</h2>
+      <button class="icon-button close-button" type="button" data-close-dialog="deleteTaskDialog" aria-label="关闭">×</button>
+    </div>
+    <p id="deleteTaskTitle" class="delete-task-name"></p>
+    <div id="deleteTaskFacts" class="summary-panel"></div>
+    <p id="deleteTaskWarning" class="warning-text"></p>
+    <label id="deleteTaskConfirmRow">输入 DELETE 确认<input id="deleteTaskConfirmInput" autocomplete="off" spellcheck="false" placeholder="DELETE"></label>
+    <div class="dialog-actions">
+      <button class="button button-quiet" type="button" data-close-dialog="deleteTaskDialog">取消</button>
+      <button id="confirmDeleteTask" class="button button-danger" type="button" disabled>删除</button>
     </div>
   </dialog>
 

@@ -305,8 +305,14 @@ async def _local_only_and_security_headers(request: Request, call_next):
         "default-src 'self'; img-src 'self' data:; style-src 'self'; "
         "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     )
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+    # 本机单用户工具会随代码更新：页面与静态资源一律不走缓存，
+    # 否则改完界面后浏览器仍会渲染旧的 HTML / CSS / JS。
+    if (
+        request.url.path.startswith("/api/")
+        or request.url.path == "/"
+        or request.url.path.startswith("/static/")
+    ):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
 
@@ -378,10 +384,13 @@ def shutdown_webui(request: Request):
 
 
 @app.get("/api/overview")
-def get_overview(request: Request):
+def get_overview(request: Request, include_archived: bool = False):
     store = _store(request)
     return {
-        "tasks": [_task_json(task) for task in store.list_tasks()],
+        "tasks": [
+            _task_json(task)
+            for task in store.list_tasks(include_archived=include_archived)
+        ],
         "queue": [
             {
                 "task_id": item.task_id,
@@ -697,8 +706,9 @@ async def delete_task(request: Request, task_id: str):
     body = await _json_body(request)
     mode = body.get("mode")
     store = _store(request)
-    if mode == "draft":
-        store.delete_draft(task_id)
+    if mode in {"record", "draft"}:
+        # 没有题包的任务只删记录；老客户端发的 "draft" 仍然接受
+        store.delete_task_record(task_id)
     elif mode == "package" and body.get("confirmation") == "DELETE":
         store.delete_task_and_package(task_id)
     else:
