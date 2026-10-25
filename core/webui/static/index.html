@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AutoLearn</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg?v=2">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -13,10 +14,7 @@
       <div class="topbar-left">
         <button id="shutdownService" class="button button-danger-quiet" type="button">关闭服务</button>
         <span class="topbar-divider" aria-hidden="true"></span>
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">AL</span>
-          <strong>AutoLearn</strong>
-        </div>
+        <div class="brand"><img class="brand-logo" src="/static/logo.svg?v=2" alt="AutoLearn"></div>
       </div>
       <div class="topbar-actions">
         <span id="serviceStatus" class="service-status" role="status">连接中</span>
@@ -37,18 +35,25 @@
           </button>
         </div>
         <input id="taskSearch" class="search-input" type="search" placeholder="搜索" aria-label="搜索任务">
-        <div class="filter-row">
+        <div class="filter-row filter-row-three">
+          <select id="typeFilter" aria-label="按类型筛选"><option value="">全部类型</option><option value="homework">做题</option><option value="course">网课</option></select>
           <select id="siteFilter" aria-label="按站点筛选"></select>
           <select id="statusFilter" aria-label="按状态筛选"></select>
         </div>
+        <select id="sortFilter" class="sort-filter" aria-label="任务排序">
+          <option value="updated_desc">最近更新</option>
+          <option value="updated_asc">最早更新</option>
+          <option value="title_asc">名称排序</option>
+        </select>
         <div id="queueSummary" class="queue-summary" hidden></div>
         <div id="taskList" class="task-list" aria-live="polite"></div>
       </section>
 
       <section id="detailPane" class="detail-pane" aria-live="polite">
         <div class="empty-workspace">
-          <div class="empty-symbol" aria-hidden="true">AL</div>
+          <img class="empty-logo" src="/static/logo.svg?v=2" alt="">
           <h2>选择一个任务</h2>
+          <button id="newTaskFromEmpty" class="button button-primary" type="button">新建任务</button>
         </div>
       </section>
     </main>
@@ -60,11 +65,21 @@
         <h2>新建任务</h2>
         <button class="icon-button close-button" type="button" data-close-dialog="newTaskDialog" aria-label="关闭">×</button>
       </div>
-      <label>任务名称<input name="title" maxlength="120" placeholder="留空则自动生成"></label>
+      <input type="hidden" name="task_type" value="homework">
+      <div class="type-switch" role="group" aria-label="任务类型">
+        <button class="type-switch-button selected" type="button" data-task-type="homework">做题</button>
+        <button class="type-switch-button" type="button" data-task-type="course">网课</button>
+      </div>
       <label>站点<select name="site_id" required></select></label>
-      <label>作业网址<input name="page_url" type="url" required placeholder="https://"></label>
-      <label>模型档案<select name="model_profile_id"></select></label>
-      <p class="form-hint">网址仅保存在本机，由 DPAPI 保护；Cookie 与 API 密钥不会显示在页面中。</p>
+      <label>任务名称<input name="title" maxlength="120" placeholder="留空则自动生成"></label>
+      <section class="form-section" data-section="homework">
+        <label>作业网址<input name="page_url" type="url" required placeholder="https://"></label>
+        <label>模型档案<select name="model_profile_id"></select></label>
+        <p class="form-hint">网址仅保存在本机，由 DPAPI 保护；Cookie 与 API 密钥不会显示在页面中。</p>
+      </section>
+      <section class="form-section" data-section="course" hidden>
+        <p class="form-hint">创建后先使用智慧树二维码登录，再从账号课程目录中选择课程。</p>
+      </section>
       <div class="dialog-actions">
         <button class="button button-quiet" type="button" data-close-dialog="newTaskDialog">取消</button>
         <button class="button button-primary" type="submit">创建草稿</button>
@@ -157,6 +172,18 @@
     <p class="form-hint">本次使用全新的临时浏览器配置，不保留上次登录状态；中途关闭浏览器会中断抓取。</p>
     <div class="dialog-actions">
       <button class="button button-primary" type="button" data-close-dialog="authCaptureDialog">知道了</button>
+    </div>
+  </dialog>
+
+  <dialog id="captchaRequiredDialog" class="dialog dialog-danger">
+    <div class="dialog-heading">
+      <h2>需要完成智慧树验证码</h2>
+      <button class="icon-button close-button" type="button" data-close-dialog="captchaRequiredDialog" aria-label="关闭">×</button>
+    </div>
+    <p class="warning-text">智慧树返回了 Captcha Required，当前课程运行已停止。请在浏览器中自行打开智慧树网页，用当前账号登录并完成验证码；完成后返回 AutoLearn，点击“验证码完成后重试”。</p>
+    <p class="form-hint">AutoLearn 不会自动跳转或嵌入验证码页面。网页登录后的验证状态可能无法同步到当前任务会话；若重试仍触发验证码，请检查智慧树网页的登录状态。</p>
+    <div class="dialog-actions">
+      <button class="button button-primary" type="button" data-close-dialog="captchaRequiredDialog">知道了</button>
     </div>
   </dialog>
 

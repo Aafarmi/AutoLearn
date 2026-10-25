@@ -1,0 +1,36 @@
+{
+  "adapters": [
+    {
+      "label": "超星学习通",
+      "site_id": "chaoxing",
+      "task_types": [
+        "homework"
+      ]
+    },
+    {
+      "label": "长江雨课堂",
+      "site_id": "cjyuketang",
+      "task_types": [
+        "homework"
+      ]
+    },
+    {
+      "label": "智慧树",
+      "site_id": "zhihuishu",
+      "task_types": [
+        "course"
+      ]
+    }
+  ],
+  "port": "<PORT>",
+  "task_types": [
+    {
+      "label": "做题",
+      "task_type_id": "homework"
+    },
+    {
+      "label": "网课",
+      "task_type_id": "course"
+    }
+  ]
+}

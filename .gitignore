@@ -1,6 +1,13 @@
 questions.json
 questions.html
 config.json
+/AGENTS.md
+docs/engineering-knowledge-*.md
+.env
+.env.*
+!.env.example
+*.har
+*.har.zip
 .idea/
 /runs/
 .venv/
@@ -10,6 +17,10 @@ config.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp-*/
+
+# Captured course/quiz page snapshot; may contain private session or assessment data.
+/docs/sour.html
 
 # AI 助手本地工作区（记忆、会话缓存），不进入版本库
 .workbuddy/

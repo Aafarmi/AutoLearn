@@ -1,0 +1,46 @@
+{
+  "active_task_id": null,
+  "queue": [],
+  "tasks": [
+    {
+      "authentication_hint": null,
+      "created_at": "<TIMESTAMP>",
+      "current_step": "setup",
+      "interaction_retry_authorized": false,
+      "interrupted_operation": null,
+      "last_operation": null,
+      "last_safe_error_category": null,
+      "model_profile_id": null,
+      "pending_operation": null,
+      "queue_position": null,
+      "queue_state": null,
+      "run_id": null,
+      "site_id": "chaoxing",
+      "status": "draft",
+      "task_id": "<TASK_1>",
+      "task_type": "homework",
+      "title": "契约快照 · 草稿一",
+      "updated_at": "<TIMESTAMP>"
+    },
+    {
+      "authentication_hint": null,
+      "created_at": "<TIMESTAMP>",
+      "current_step": "setup",
+      "interaction_retry_authorized": false,
+      "interrupted_operation": null,
+      "last_operation": null,
+      "last_safe_error_category": null,
+      "model_profile_id": null,
+      "pending_operation": null,
+      "queue_position": null,
+      "queue_state": null,
+      "run_id": null,
+      "site_id": "chaoxing",
+      "status": "draft",
+      "task_id": "<TASK_2>",
+      "task_type": "homework",
+      "title": "契约快照 · 草稿二",
+      "updated_at": "<TIMESTAMP>"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 AutoLearn 是一个运行在本机的课程作业工作区，用任务队列串联题目抓取、模型解题、答案复核和网页填写。当前版本提供 localhost WebUI：浏览器显示页面，Python 服务负责本地数据、任务队列和站点操作。
 
-> 当前版本：**v1.0.4** · [更新记录](CHANGELOG.md)
+> 当前版本：**v1.1.0** · [更新记录](CHANGELOG.md)
 
 ## 功能
 
@@ -13,6 +13,7 @@ AutoLearn 是一个运行在本机的课程作业工作区，用任务队列串�
 - 在本机任务页复核和修改答案。
 - 交互前检查题目、选择器和控件映射，填写后核对回显。
 - 仅在本机任务页通过一次性确认发起正常提交；提交结果按网站页面证据记录。
+- **智慧树网课**：支持共享课、校内课和 AI 课程，独立创建、登录验证、进度跟踪、停止与重跑。
 
 ## 适配器扩展
 
@@ -40,6 +41,7 @@ AutoLearn 使用了开源项目 **Scrapling** 完成网页抓取、浏览器渲�
 - 使用 Cookie Manager 时需要本机安装 Google Chrome Stable x64。
 - 安装 Python 依赖和 Scrapling 浏览器组件时需要网络连接。
 - 项目直接依赖锁定在 `requirements.txt` 和 `pyproject.toml`：FastAPI、Uvicorn、Scrapling。
+- 网课子进程复用同一 `.venv` 中锁定的 `requests`、`openai`、`tiktoken`、`pycryptodome` 和 `Pillow`；`setup.bat` 会一并安装，无需单独安装 vendor 依赖。`tiktoken` 首次编码可能需要联网下载并缓存词表。
 
 ## 一键安装并运行（推荐）
 
@@ -210,13 +212,26 @@ Cookie Manager 的 `real_chrome=True` 路径还要求本机安装 Google Chrome 
 
 提交结果按网站页面证据记录。若网站可能已自动保存、填写结果不明或提交状态不确定，先检查网页状态，再决定是否重试。
 
+### 网课任务（智慧树）
+
+点击“新建任务”并选择“网课”，填写任务名并创建；创建时不选课程。打开任务详情后点击“登录”，页面会显示 fuckZHS 提供的智慧树二维码，只支持扫码登录。登录成功后点“抓取课程目录”，再从账号返回的共享课、校内课或 AI 课程列表中选择。共享课使用上游 `secret`（`recruitAndCourseId`）；校内课使用 `courseId`；AI 课程使用课程 ID 和班级 ID。AI 课程还需在详情参数中选择模型档案。
+
+扫码验证成功后任务进入待选课状态；选择课程后即可配置运行参数并点击“开始学习”。运行中可停止，完成、部分完成、失败或取消后可重跑。每个智慧树站点同一时间只允许一个课程任务运行；课程不进入做题任务队列。
+
+#### 常见问题
+
+- **Cookie 过期怎么办？** 在课程详情点击“重新登录”，使用新的二维码扫码；登录完成后重新抓取课程目录。
+- **为什么显示“部分完成”？** 达到设置的运行时限，或存在已完成与未完成/失败项目时，课程会以部分完成结束。可查看进度和错误分类，调整运行时限或登录态后重跑。
+- **能否同时跑两门课？** 不能。智慧树课程运行使用单一站点活动槽，同一时间只能运行一个课程任务；停止或结束后再启动另一门。
+- **诊断日志在哪？** 每个课程任务的脱敏日志位于 `%LOCALAPPDATA%\AutoLearn\courses\jobs\<task_id>\diagnostics.log`，最多 2 MB。日志可能截断；不要将日志和 Cookie 配置发到公开位置。
+
 ### 安全提醒
 
 Cookie 和 API 密钥由本机后端读取，不会返回给页面。题面文字和图片会发送到所配置的模型服务；提交确认只授权一次网页提交尝试。
 
 ## 浏览器组件
 
-- Cookie Manager 需要本机安装 Google Chrome Stable x64。
+- 做题 Cookie Manager 需要本机安装 Google Chrome Stable x64；智慧树网课登录使用 fuckZHS 的二维码逻辑，不打开 Chrome。
 - Cookie 抓取每次都拉起全新的临时浏览器，不保留上次的登录状态；需要重新登录属于预期行为。
 - 需要 Scrapling 浏览器型抓取或交互时，主动执行 `scrapling install`。
 - 浏览器组件必须安装在与项目相同的 Python 环境中，否则运行时会提示缺少 Scrapling 浏览器依赖。
@@ -246,6 +261,7 @@ Cookie 和 API 密钥由本机后端读取，不会返回给页面。题面文�
 | `config.json` | 模型档案、站点 URL 和 Cookie |
 | `tasks.sqlite3` | 任务、队列和事件 |
 | `runs/<run_id>/` | 题目、交互映射、答案、结果和本地图片 |
+| `courses/jobs/<task_id>/` | 网课任务 JSON、业务与运行事件、脱敏 `diagnostics.log` |
 | `logs/` | 安全运行日志，抓取失败原因见 `crawl.log`（URL 与 Cookie 已脱敏） |
 | `ChromeProfiles/` | 旧版本遗留的浏览器 profile；当前版本不再写入，可安全删除 |
 | `backups/` | 数据迁移和数据库备份 |
@@ -264,7 +280,8 @@ rerun.bat   结束默认端口上的 AutoLearn 服务后重新启动
 core/       业务代码、站点适配器和本机 WebUI
   adapters/ 站点适配器及其 Schema（按目录隔离）
   auth/     Cookie 管理
-  common/   通用 Schema 校验
+  common/   通用文件写入、时间和 Schema 校验
+  courses/  智慧树课程任务、JSON 存储、运行时与隔离 bridge
   interaction/ 网页交互入口
   settings/ 模型档案
   solver/   解题和答案复核

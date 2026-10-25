@@ -19,6 +19,8 @@ DEFAULT_CONFIG_PATH = data_path("config.json")
 _SITE_COOKIE_FIELDS = {
     "chaoxing": ("chaoxing", "cookie"),
     "cjyuketang": ("cjyuketang", "cookie"),
+    # 课程站点（智慧树）与做题站点共用同一份 config.json，只是 section 名不同。
+    "zhihuishu": ("zhihuishu", "cookie"),
 }
 
 

@@ -1,6 +1,6 @@
 # AutoLearn 架构与目录
 
-> 架构梳理日期：2026-10-17。当前项目规范以根目录 `AGENTS.md` 和 `README.md` 为准；旧前端方案已移入 `docs/archive/`。
+> 架构梳理日期：2026-10-24。当前项目说明以根目录 `README.md`、`TASKBOOK.md` 和 `docs/TASKS.md` 为准；旧前端方案已移入 `docs/archive/`。
 
 ## 架构概览
 
@@ -35,14 +35,15 @@ flowchart LR
 
 ```text
 AutoLearn/
-├── AGENTS.md                      项目开发约定
 ├── README.md                      安装、启动和使用说明
+├── TASKBOOK.md                    网课模块需求与验收任务书
 ├── pyproject.toml                 Python 包元数据与 WebUI 命令入口
 ├── requirements.txt               固定的运行依赖
 ├── run.bat                        启动 WebUI
 ├── rerun.bat                      结束旧服务并重新启动 WebUI
 ├── docs/
 │   ├── architecture.md            当前架构与数据流
+│   ├── TASKS.md                   网课实施原则、进度与验收记录
 │   └── archive/
 │       ├── README.md              历史文档说明
 │       └── frontend_task_plan.md  历史前端方案，不作为当前规范
@@ -52,7 +53,7 @@ AutoLearn/
 │   ├── credentials.py             后端按需读取 Cookie 和模型配置
 │   ├── url_protection.py          Windows DPAPI CurrentUser URL 保护
 │   ├── auth/                      Cookie Manager
-│   ├── common/                    通用 JSON Schema 校验
+│   ├── common/                    通用文件写入、时间与 Schema 校验
 │   ├── settings/                  模型档案和本地配置存储
 │   ├── tasks/
 │   │   ├── models.py              任务、队列和事件模型
@@ -66,8 +67,16 @@ AutoLearn/
 │   ├── adapters/
 │   │   ├── chaoxing/              超星爬取、校验、交互和 Schema
 │   │   └── cjyuketang/            长江雨课堂爬取、校验、交互和 Schema
+│   ├── courses/
+│   │   ├── domain.py              课程任务状态、阶段和模式
+│   │   ├── store.py               课程 JSON 索引、任务与事件持久化
+│   │   ├── dto.py                 混合列表和课程详情序列化
+│   │   ├── service.py             创建、认证与生命周期编排
+│   │   ├── runtime.py             课程子进程、JSONL 事件泵和诊断日志
+│   │   └── providers/zhihuishu/   登录预检、bridge 与只读 fuckZHS vendor
 │   └── webui/
 │       ├── app.py                 FastAPI 路由、安全检查和启动参数
+│       ├── task_router.py         做题 / 课程任务分发
 │       └── static/                本机 HTML、CSS、JavaScript
 ```
 
@@ -85,6 +94,30 @@ AutoLearn/
 | `core.interaction` | 通用题包检查、适配器加载和执行结果校验 |
 | `core.settings` / `core.credentials` | 模型档案、Cookie 和 API 密钥的后端读取 |
 | `core.paths` / `core.data_migration` | 资源与用户数据隔离，以及旧数据安全迁移 |
+
+## 网课模块
+
+网课任务由 `core.courses` 独立承载，当前站点为智慧树，支持共享课、校内课和 AI 课程。`sites.py` 声明课程站点能力；`domain.py` 定义课程自己的状态、阶段和模式；`store.py` 用 JSON 文件、摘要索引和双 JSONL 事件日志保存课程状态；`dto.py` 输出与混合任务列表兼容的摘要和课程详情；`service.py` 编排创建、登录、选课、启动、重跑、停止、归档和删除。新任务先以未选课草稿创建；扫码登录后通过 `qr_sessions.py` 管理上游二维码会话，再由用户点击抓取目录并选择课程。课程数据位于 `%LOCALAPPDATA%\AutoLearn\courses\`，不写入做题的 `tasks.sqlite3`。
+
+### 两套任务域的关系
+
+做题继续由 `core.tasks` 的 `TaskStore`（SQLite）、`TaskRuntimeController` 与串行 worker 负责，站点实现仍在 `core.adapters`。课程继续使用自己的 `CourseJobStore` 和 `CourseRuntime`，不共用状态机、队列、持久化表或上游请求逻辑。`core.webui.task_router` 按任务 ID 将通用详情、停止、归档、删除、认证和事件请求转发到对应域；`app.py` 汇合两侧摘要供 WebUI 混合列表使用。课程站点不注册进 `core.adapters`，以免进入做题站点发现和做题创建流程。
+
+### 子进程与 JSONL 数据流
+
+登录与课程目录查询也使用独立子进程：`auth_bridge.py` 在隔离的 vendor 副本中直接调用上游 `Fucker.login(use_qr=True)`、`getZhidaoList()`、`getHikeList()` 和 `getZhidaoAiList()`。二维码图像通过受控 JSONL 事件传到 WebUI；登录 Cookie 由现有 Cookie Manager 校验、序列化并原子写入本机配置。目录接口仅把上游对象转换为模式、课程 ID、班级 ID 和名称供用户选择。
+
+课程启动时，`CourseRuntime` 准备 `courses/jobs/<task_id>/run/`，把白名单内的 fuckZHS vendor 文件复制到运行目录，再启动独立 Python bridge。Cookie 与本次运行参数经子进程 stdin 传入，不写入任务 JSON 或日志。bridge 按显式的 `shared` / `hike` / `ai` 模式调用上游 `Fucker.fuckZhidaoCourse()`、`fuckHikeCourse()` 或 `fuckAiCourse()`；不复制上游课程请求和遍历逻辑。
+
+stdout 专用于受 `protocol.validate_event()` 校验的 JSONL 事件（阶段、进度和最终结果），由 runtime 事件泵合并进度并写入任务状态和 `runtime-events.jsonl`；用户可见的业务事件写入 `events.jsonl`。上游普通输出和 stderr 与协议通道隔离，经脱敏后写入 `diagnostics.log`（上限 2 MB）。运行结束后 runtime 根据取消、超时、合法 result 和进程退出等信号裁定终态，释放智慧树站点活动槽，并清理运行副本；任务诊断和事件记录保留。
+
+### 与做题模块的边界
+
+- 两侧共享 WebUI 列表和接口外壳，不共享任务状态、存储、运行器或队列。
+- 做题任务仍由既有 worker 排队；课程任务不入做题队列，同一课程站点同一时刻最多运行一个课程任务。
+- 课程页面进度与结果从上游能力和 bridge 事件适配，不改变做题的阶段授权、答案复核和提交确认流程。
+- `vendor/fuckZHS` 是只读快照；兼容处理放在课程 provider / bridge / runtime。新增课程站点只登记在 `core.courses.sites`，不能放入 `core.adapters`。
+- 课程和做题都使用现有用户数据路径工具；资源路径与可写数据路径不从当前工作目录推导。
 
 ## WebUI 入口与安全
 
@@ -118,6 +151,7 @@ Windows 用户数据根目录为 `%LOCALAPPDATA%\AutoLearn`，包含：
 - `config.json`：模型档案和站点 Cookie。
 - `tasks.sqlite3`：任务、队列、运行状态和事件。
 - `runs/<run_id>/`：题目、交互映射、答案、图片和执行结果。
+- `courses/jobs/<task_id>/`：课程任务 JSON、业务与运行 JSONL 事件、脱敏诊断日志和当前运行目录。
 - `logs/`：只记录必要汇总和安全错误分类。
 - `ChromeProfiles/`：旧版本遗留的浏览器 profile；当前版本不再写入，可删除。
 - `backups/`：迁移源和 SQLite 备份。

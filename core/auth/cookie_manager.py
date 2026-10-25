@@ -58,22 +58,16 @@ def _available_adapters() -> list[str]:
         return []
 
 
-def _load_adapter(site_id: str) -> ModuleType:
-    if not _SITE_ID_PATTERN.fullmatch(site_id):
-        raise CookieManagerError("适配器 ID 格式无效。")
-    adapter_dir = (ADAPTERS_ROOT / site_id).resolve()
-    if ADAPTERS_ROOT.resolve() not in adapter_dir.parents:
-        raise CookieManagerError("适配器目录无效。")
-    if not (adapter_dir / "auth.py").is_file():
-        available = _available_adapters()
-        suffix = f"；可用适配器：{', '.join(available)}" if available else ""
-        raise CookieManagerError(f"适配器 {site_id} 尚未提供 Cookie 管理配置{suffix}。")
+def _validate_module(adapter: ModuleType, *, expected_site_id: str | None = None) -> None:
+    """校验一个认证配置模块是否满足抓取所需的最小契约。
 
-    try:
-        adapter = importlib.import_module(f"core.adapters.{site_id}.auth")
-    except Exception:
-        raise CookieManagerError("无法加载该适配器的认证配置。") from None
+    抽出成独立函数是为了让非 `core.adapters` 的调用方（课程侧的
+    `core.courses.providers.<site>.auth`）也能复用同一套校验：**校验口径只有
+    这一份**，不允许调用方自己再写一遍或放宽。
 
+    `expected_site_id` 传入时额外要求 `adapter.SITE_ID` 与之一致（适配器目录名
+    与模块自述必须对得上）；按模块直接调用时不需要。
+    """
     required = (
         "SITE_ID",
         "CONFIG_SECTION",
@@ -85,7 +79,7 @@ def _load_adapter(site_id: str) -> ModuleType:
     )
     if any(not hasattr(adapter, name) for name in required):
         raise CookieManagerError("适配器认证配置不完整。")
-    if adapter.SITE_ID != site_id:
+    if expected_site_id is not None and adapter.SITE_ID != expected_site_id:
         raise CookieManagerError("适配器认证配置中的 site_id 不匹配。")
     for name in ("CONFIG_SECTION", "URL_FIELD", "COOKIE_FIELD"):
         value = getattr(adapter, name)
@@ -114,6 +108,25 @@ def _load_adapter(site_id: str) -> ModuleType:
             or not _host_is_allowed(parsed_start.hostname, domains)
         ):
             raise CookieManagerError("适配器认证起始地址必须是该适配器允许域名下的 HTTPS 地址。")
+
+
+def _load_adapter(site_id: str) -> ModuleType:
+    if not _SITE_ID_PATTERN.fullmatch(site_id):
+        raise CookieManagerError("适配器 ID 格式无效。")
+    adapter_dir = (ADAPTERS_ROOT / site_id).resolve()
+    if ADAPTERS_ROOT.resolve() not in adapter_dir.parents:
+        raise CookieManagerError("适配器目录无效。")
+    if not (adapter_dir / "auth.py").is_file():
+        available = _available_adapters()
+        suffix = f"；可用适配器：{', '.join(available)}" if available else ""
+        raise CookieManagerError(f"适配器 {site_id} 尚未提供 Cookie 管理配置{suffix}。")
+
+    try:
+        adapter = importlib.import_module(f"core.adapters.{site_id}.auth")
+    except Exception:
+        raise CookieManagerError("无法加载该适配器的认证配置。") from None
+
+    _validate_module(adapter, expected_site_id=site_id)
     return adapter
 
 
@@ -472,19 +485,24 @@ def _atomic_write_config(config: dict[str, Any], original_bytes: bytes) -> None:
         raise CookieManagerError("无法安全更新 config.json；原配置保持不变。") from None
 
 
-def capture_for_adapter(
-    site_id: str,
+def capture_for_module(
+    adapter: ModuleType,
     page_url: str | None = None,
     *,
     status_callback: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> tuple[str, int] | None:
-    """Capture a site's Cookie; UI callbacks receive status codes only.
+    """Capture a Cookie using an already-resolved auth module.
 
-    The optional URL is the task's private URL context. If omitted, the legacy
-    CLI path continues to read the adapter URL from config.json.
+    This is the body that used to live in :func:`capture_for_adapter`; the module
+    is passed in so callers outside ``core.adapters`` (course providers) can use
+    the same browser flow without registering themselves as homework adapters.
+    The module still has to satisfy :func:`_validate_module`.
+
+    The optional URL overrides ``<section>.<URL_FIELD>`` from config.json; the
+    legacy CLI path keeps reading it from config.
     """
-    adapter = _load_adapter(site_id)
+    _validate_module(adapter)
     config, original_bytes = _read_config()
     section = _adapter_config(config, adapter)
     url = _validate_target_url(
@@ -534,6 +552,132 @@ def capture_for_adapter(
             pass
         return None
     return adapter.COOKIE_FIELD, len(records)
+
+
+def persist_cookies_for_module(adapter: ModuleType, records: list[dict[str, Any]]) -> tuple[str, int]:
+    """Persist cookies supplied by a provider using the shared safe config writer.
+
+    The provider owns the login mechanism (for example upstream QR login); this
+    module still owns validation, serialization and atomic persistence.
+    """
+    _validate_module(adapter)
+    if not isinstance(records, list) or not records:
+        raise CookieManagerError("未取得适用于目标页面的有效 Cookie；config.json 未修改。")
+    allowed_records: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name, value, domain = record.get("name"), record.get("value"), record.get("domain")
+        if (
+            not isinstance(name, str) or not name
+            or not isinstance(value, str)
+            or not isinstance(domain, str)
+            or not _host_is_allowed(domain, adapter.ALLOWED_COOKIE_DOMAINS)
+        ):
+            continue
+        expires = record.get("expires")
+        if isinstance(expires, (int, float)) and 0 < expires <= time.time():
+            continue
+        # QR login's RequestsCookieJar may contain same-name cookies scoped to
+        # different Zhihuishu subdomains. The Cookie header cannot carry domain
+        # scopes, so use the same first-seen rule as _capture_cookies().
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        allowed_records.append({"name": name, "value": value})
+    if not allowed_records:
+        raise CookieManagerError("未取得适用于目标页面的有效 Cookie；config.json 未修改。")
+    ensure_config_section(adapter)
+    config, original_bytes = _read_config()
+    section = _adapter_config(config, adapter)
+    try:
+        cookie_value = adapter.serialize_cookies(allowed_records)
+        json.dumps(cookie_value, ensure_ascii=False)
+    except Exception:
+        raise CookieManagerError("适配器无法安全地序列化 Cookie；config.json 未修改。") from None
+    expected_type = getattr(adapter, "COOKIE_VALUE_TYPE", str)
+    if not isinstance(cookie_value, expected_type) or cookie_value is None:
+        raise CookieManagerError("适配器生成的 Cookie 配置类型无效；config.json 未修改。")
+    if isinstance(cookie_value, str) and not cookie_value.strip():
+        raise CookieManagerError("生成的 Cookie 内容为空；config.json 未修改。")
+    section[adapter.COOKIE_FIELD] = cookie_value
+    _atomic_write_config(config, original_bytes)
+    return adapter.COOKIE_FIELD, len(allowed_records)
+
+
+def capture_for_adapter(
+    site_id: str,
+    page_url: str | None = None,
+    *,
+    status_callback: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[str, int] | None:
+    """Capture a site's Cookie; UI callbacks receive status codes only.
+
+    Homework path: resolve the adapter module from ``core.adapters`` and delegate
+    to :func:`capture_for_module`. Behaviour is unchanged from before the split.
+    """
+    adapter = _load_adapter(site_id)
+    return capture_for_module(
+        adapter,
+        page_url,
+        status_callback=status_callback,
+        cancel_event=cancel_event,
+    )
+
+
+def ensure_config_section(adapter: ModuleType) -> bool:
+    """Make sure config.json exists and holds an object under ``CONFIG_SECTION``.
+
+    Course sites live outside ``core.adapters`` and are not created by the
+    homework bootstrap, so the section may be missing on a fresh profile. It is
+    added as an empty object and written back through the same atomic writer the
+    capture uses, **preserving every other key** in config.json.
+
+    Returns True when a write happened. A section that exists but is not an
+    object is left alone and reported, never silently replaced.
+    """
+    _validate_module(adapter)
+    if not CONFIG_PATH.exists():
+        _write_new_config({adapter.CONFIG_SECTION: {}})
+        return True
+    config, original_bytes = _read_config()
+    section = config.get(adapter.CONFIG_SECTION)
+    if isinstance(section, dict):
+        return False
+    if section is not None:
+        raise CookieManagerError(
+            f"config.json 中的 {adapter.CONFIG_SECTION} 必须是对象；文件未修改。"
+        )
+    config[adapter.CONFIG_SECTION] = {}
+    _atomic_write_config(config, original_bytes)
+    return True
+
+
+def _write_new_config(config: dict[str, Any]) -> None:
+    """首次创建 config.json（原子写；之后一律走 `_atomic_write_config` 的比对路径）。"""
+    serialized = (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    temporary_path: Path | None = None
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".config.", suffix=".tmp", dir=CONFIG_PATH.parent
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(file_descriptor, "wb") as stream:
+            stream.write(serialized)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, CONFIG_PATH)
+    except OSError:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise CookieManagerError("无法安全创建 config.json；原配置保持不变。") from None
+
 
 
 def main(argv: list[str] | None = None) -> int:

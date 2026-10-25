@@ -1,0 +1,39 @@
+{
+  "cookie_status": {
+    "captured": false,
+    "configured": false
+  },
+  "events": [
+    {
+      "event_id": 1,
+      "event_type": "task_created",
+      "from_status": null,
+      "occurred_at": "<TIMESTAMP>",
+      "operation": null,
+      "safe_error_category": null,
+      "task_id": "<TASK_1>",
+      "to_status": "draft"
+    }
+  ],
+  "queue": null,
+  "task": {
+    "authentication_hint": null,
+    "created_at": "<TIMESTAMP>",
+    "current_step": "setup",
+    "interaction_retry_authorized": false,
+    "interrupted_operation": null,
+    "last_operation": null,
+    "last_safe_error_category": null,
+    "model_profile_id": null,
+    "pending_operation": null,
+    "queue_position": null,
+    "queue_state": null,
+    "run_id": null,
+    "site_id": "chaoxing",
+    "status": "draft",
+    "task_id": "<TASK_1>",
+    "task_type": "homework",
+    "title": "契约快照 · 草稿一",
+    "updated_at": "<TIMESTAMP>"
+  }
+}

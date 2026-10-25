@@ -22,8 +22,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.credentials import CredentialProviderError, LocalCredentialProvider
+from core.courses import dto as course_dto
+from core.courses import runtime as course_runtime
 from core.courses import sites as course_sites
-from core.courses.errors import CourseError
+from core.courses.errors import CourseError, safe_course_message
 from core.courses.store import CourseJobStore
 from core.data_migration import ensure_user_data_migrated
 from core.paths import resource_path
@@ -85,6 +87,17 @@ async def _lifespan(application: FastAPI):
     try:
         yield
     finally:
+        try:
+            from core.courses.providers.zhihuishu import qr_sessions
+            qr_sessions.shutdown_all()
+        except Exception:
+            logger.exception("二维码登录会话清理失败，服务继续退出")
+        # 课程子进程必须先收（M7）：它们仍要往 job.json / events.jsonl 写状态，
+        # 等 TaskStore 关掉再收就晚了；异常只记日志，不能挡住服务退出。
+        try:
+            course_runtime.shutdown_all()
+        except Exception:
+            logger.exception("课程进程关机清理失败，服务继续退出")
         if runtime.shutdown(timeout_seconds=None):
             task_store.close()
 
@@ -338,6 +351,11 @@ async def _local_only_and_security_headers(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
+        logger.exception(
+            "Unhandled local WebUI request: %s %s",
+            request.method,
+            request.url.path,
+        )
         response = JSONResponse({"detail": "本地服务暂时无法处理此请求。"}, status_code=500)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -390,7 +408,7 @@ async def _store_error(_request: Request, _error: TaskStoreError):
 @app.exception_handler(CourseError)
 async def _course_error(_request: Request, error: CourseError):
     """课程任务的安全错误 → JSON。没这条的话 CourseNotFound 会漏成 500。"""
-    return JSONResponse({"detail": error.message}, status_code=error.status_code)
+    return JSONResponse({"detail": safe_course_message(error)}, status_code=error.status_code)
 
 
 @app.exception_handler(KeyError)
@@ -448,14 +466,47 @@ def shutdown_webui(request: Request):
     return {"shutting_down": True}
 
 
+def _course_overview(include_archived: bool) -> list[dict[str, Any]]:
+    """课程任务摘要（§5.1 的 18 键），任何异常都降级成空列表。
+
+    课程存储与做题 SQLite 完全独立：索引损坏、`job.json` 被并发替换、目录不可写
+    都只该影响课程列表本身。`/api/overview` 是前端 1.6s 轮询的热路径，这里漏出
+    一个异常就会把整个任务列表打成 500，连做题任务都看不到。
+
+    摘要一律走 `dto.summary()`（M5）：它负责脱敏、固定值与 18 键白名单。
+    DTO 直接接收索引条目，正常轮询不回读 job.json；坏条目单独跳过。
+    """
+    try:
+        store = CourseJobStore()
+        entries = store.list_summaries(include_archived=include_archived)
+    except Exception:
+        logger.warning("课程任务列表读取失败，本次只返回做题任务", exc_info=True)
+        return []
+    summaries: list[dict[str, Any]] = []
+    for entry in entries:
+        job_id = entry.get("job_id") if isinstance(entry, dict) else None
+        if not isinstance(job_id, str):
+            continue
+        try:
+            summaries.append(course_dto.summary(entry))
+        except Exception:
+            logger.warning("课程任务摘要生成失败，已跳过：%s", job_id, exc_info=True)
+    return summaries
+
+
 @app.get("/api/overview")
 def get_overview(request: Request, include_archived: bool = False):
     store = _store(request)
+    tasks = [
+        _task_json(task)
+        for task in store.list_tasks(include_archived=include_archived)
+    ]
+    # 两类任务同格式时间戳（UTC + 毫秒 + Z），合并后按 updated_at 倒序；
+    # 稳定排序保证同一毫秒内做题任务在前，做题链路看到的相对顺序不变。
+    tasks.extend(_course_overview(include_archived))
+    tasks.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return {
-        "tasks": [
-            _task_json(task)
-            for task in store.list_tasks(include_archived=include_archived)
-        ],
+        "tasks": tasks,
         "queue": [
             {
                 "task_id": item.task_id,
@@ -500,6 +551,27 @@ def list_tasks(
 @app.post("/api/tasks")
 async def create_task(request: Request):
     body = await _json_body(request)
+    task_type = body.get("task_type", TASK_TYPE_HOMEWORK)
+    if task_type == TASK_TYPE_COURSE:
+        accepted = {"task_type", "site_id", "title", "course", "page_url"}
+        unknown = set(body) - accepted
+        if unknown:
+            raise CourseError(
+                f"课程创建请求含不支持的字段：{', '.join(sorted(unknown))}。", 422
+            )
+        site_id = _required_text(body, "site_id")
+        title = body.get("title")
+        if title is not None and not isinstance(title, str):
+            raise CourseError("title 字段必须是文本。", 422)
+        course = body.get("course")
+        if not isinstance(course, dict):
+            raise CourseError("course 字段必须是对象。", 422)
+        job = importlib.import_module("core.courses.service").create_job(
+            site_id, title, course
+        )
+        return course_dto.summary(job)
+    if task_type != TASK_TYPE_HOMEWORK:
+        raise WebUIRequestError(422, "任务类型无效。")
     site_id = _required_text(body, "site_id")
     title = body.get("title")
     page_url = body.get("page_url")
@@ -517,6 +589,72 @@ async def create_task(request: Request):
         model_profile_id=profile_id or None,
     )
     return _task_json(task)
+
+
+@app.post("/api/tasks/{task_id}/course/start")
+async def start_course_task(request: Request, task_id: str):
+    raw = await request.body()
+    if raw:
+        body = _parse_json_object(request, raw)
+        if body:
+            raise CourseError("开始请求不接受额外字段。", 422)
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_start(task_id)
+
+
+@app.get("/api/tasks/{task_id}/course/authentication")
+def course_authentication_status(request: Request, task_id: str):
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_authentication_status(task_id)
+
+
+@app.get("/api/tasks/{task_id}/course/catalog")
+def get_course_catalog(request: Request, task_id: str):
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_catalog(task_id)
+
+
+@app.get("/api/tasks/{task_id}/course/outline")
+def get_course_outline(request: Request, task_id: str):
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_outline(task_id)
+
+
+@app.post("/api/tasks/{task_id}/course/select")
+async def select_course(request: Request, task_id: str):
+    body = await _json_body(request)
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_select(task_id, body)
+
+
+@app.post("/api/tasks/{task_id}/course/rerun")
+async def rerun_course_task(request: Request, task_id: str):
+    raw = await request.body()
+    if raw:
+        body = _parse_json_object(request, raw)
+        if body:
+            raise CourseError("重跑请求不接受额外字段。", 422)
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    return task_router.course_rerun(task_id)
+
+
+@app.put("/api/tasks/{task_id}/course-settings")
+async def update_course_settings(request: Request, task_id: str):
+    body = await _json_body(request)
+    if not task_router.has_course_prefix(task_id):
+        raise CourseError("课程任务不存在。", 404)
+    if "options" in body and set(body) != {"options"}:
+        raise CourseError("设置请求格式无效。", 422)
+    values = body.get("options", body)
+    if not isinstance(values, dict):
+        raise CourseError("options 字段必须是对象。", 422)
+    return task_router.course_update_options(task_id, values)
 
 
 @app.get("/api/tasks/{task_id}")
@@ -607,7 +745,10 @@ async def enqueue_authentication(request: Request, task_id: str):
     if not isinstance(retry_failed, bool):
         raise WebUIRequestError(422, "重试选项无效。")
     if task_router.has_course_prefix(task_id):
-        return task_router.course_authenticate(task_id, retry_failed=retry_failed)
+        # 课程 QR 启动会准备隔离副本；保持在工作线程里避免阻塞 WebUI 事件循环。
+        return await asyncio.to_thread(
+            task_router.course_authenticate, task_id, retry_failed=retry_failed
+        )
     item = _runtime(request).enqueue_authentication(task_id, retry_failed=retry_failed)
     return {"task_id": item.task_id, "operation": _enum(item.operation), "state": _enum(item.state)}
 

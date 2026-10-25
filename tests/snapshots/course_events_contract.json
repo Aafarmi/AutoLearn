@@ -1,0 +1,17 @@
+{
+  "event_fields": {
+    "current": ["stage", "title"],
+    "diagnostic": ["category", "message"],
+    "hello": ["mode", "upstream_version", "version"],
+    "phase": ["stage", "status"],
+    "progress": ["completed_count", "current", "percent", "stage", "total", "total_count"],
+    "result": ["completed_count", "failed_count", "safe_error_category", "status", "total_count"]
+  },
+  "phase_statuses": ["completed", "failed", "started"],
+  "result_statuses": ["completed", "failed", "partial"],
+  "limits": {
+    "max_line_bytes": 65536,
+    "max_events_per_job": 500,
+    "progress_min_interval_ms": 500
+  }
+}

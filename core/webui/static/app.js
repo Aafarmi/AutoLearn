@@ -6,12 +6,14 @@ const STATUS_LABELS = {
   answer_review: "待复核答案", ready_for_interaction: "等待填写", filling: "填写中",
   awaiting_submit_confirmation: "等待提交确认", submitting: "提交中", cancelling: "正在停止",
   filled_unsubmitted: "已填写，未提交", confirmed: "已提交并确认", failed: "失败",
+  ready: "待开始", running: "运行中", stopping: "停止中", completed: "已完成", partial: "部分完成",
   unconfirmed: "结果未确认", cancelled: "已取消", paused: "已暂停",
   needs_inspection: "需要检查后恢复", archived: "已归档"
 };
 const STATUS_TONES = {
   authenticating: "info", crawling: "info", solving: "info", filling: "info", submitting: "info",
-  confirmed: "success", failed: "danger", unconfirmed: "danger", needs_inspection: "danger",
+  confirmed: "success", completed: "success", failed: "danger", unconfirmed: "danger", needs_inspection: "danger",
+  ready: "warning", running: "info", stopping: "warning", partial: "warning",
   waiting_model_authorization: "warning", awaiting_submit_confirmation: "warning",
   filled_unsubmitted: "warning", queued: "warning", cancelling: "warning"
 };
@@ -29,19 +31,28 @@ const WIZARD_STEPS = [
   ["answer_review", "复核答案"],
   ["submit_confirmation", "提交确认"]
 ];
+const COURSE_STEPS = [
+  ["setup", "任务设置"], ["authentication", "登录验证"], ["catalog", "课程目录"],
+  ["learning", "学习中"], ["exam", "考试"], ["result", "查看结果"]
+];
+const COURSE_STEP_LABELS = Object.fromEntries(COURSE_STEPS);
 const WIZARD_STEP_IDS = WIZARD_STEPS.map(([step]) => step);
 const WIZARD_LABELS = Object.fromEntries(WIZARD_STEPS);
 const REVIEW_STATUSES = new Set(["package_review", "answer_review"]);
 const state = {
   meta: { adapters: [] }, tasks: [], queue: [], profiles: [],
   activeTaskId: localStorage.getItem("autolearn.activeTask") || null,
-  detail: null, detailTaskId: null, detailRevision: null, detailRefreshing: false, overviewRefreshing: false, review: null, reviewError: null, answerMap: new Map(),
+  detail: null, detailTaskId: null, detailRevision: null, detailEventRevision: null, detailRefreshing: false, overviewRefreshing: false, review: null, reviewError: null, answerMap: new Map(),
   confirmationId: null, modelAuthorizationId: null, profileSelection: null,
-  editTaskId: null, busy: false, shuttingDown: false,
+  editTaskId: null, busy: false, shuttingDown: false, courseOptionsEditing: false, courseDetailsOpen: false,
+  courseQr: null, courseCatalogs: new Map(), courseCatalogSelection: new Map(),
+  courseCatalogQueries: new Map(), courseCatalogFilters: new Map(),
+  courseOutlines: new Map(), courseOutlineErrors: new Map(), courseOutlineLoading: new Set(), courseOutlineViews: new Map(),
   cookieStatus: { captured: false, configured: false }, submitPending: null, authenticationHint: null,
   wizardTaskId: null, wizardStep: null, wizardDerivedStep: null,
-  runtimeEvents: [], runtimeSequence: 0, taskListSignature: null
+  runtimeEvents: [], runtimeSequence: 0, captchaAlertKey: null
 };
+let paneEntranceTimer = null;
 
 function el(id) { return document.getElementById(id); }
 function node(tag, className, text) {
@@ -51,6 +62,19 @@ function node(tag, className, text) {
   return item;
 }
 function clear(element) { element.replaceChildren(); }
+function playPaneEntrance(pane) {
+  if (paneEntranceTimer) window.clearTimeout(paneEntranceTimer);
+  pane.classList.remove("is-entering");
+  void pane.offsetWidth;
+  pane.classList.add("is-entering");
+  paneEntranceTimer = window.setTimeout(() => {
+    pane.classList.remove("is-entering");
+    paneEntranceTimer = null;
+  }, 460);
+}
+function motionScrollBehavior() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
 function formatTime(value) {
   if (!value) return "未知";
   const date = new Date(value);
@@ -62,12 +86,13 @@ function siteLabel(siteId) {
   return adapter ? adapter.label : siteId;
 }
 function statusLabel(task) {
+  if (task.task_type === "course") return STATUS_LABELS[task.status] || task.status;
   if (task.queue_state === "active") return "运行中";
   if (task.queue_state === "queued") return task.queue_position ? `排队中 · 第 ${task.queue_position} 位` : "排队中";
   return STATUS_LABELS[task.status] || task.status;
 }
 function statusBadge(task) {
-  const tone = task.queue_state ? "warning" : (STATUS_TONES[task.status] || "neutral");
+  const tone = task.task_type !== "course" && task.queue_state ? "warning" : (STATUS_TONES[task.status] || "neutral");
   return node("span", `badge ${tone}`, statusLabel(task));
 }
 async function api(path, options = {}) {
@@ -91,15 +116,17 @@ function toast(message, tone = "info") {
   window.setTimeout(() => item.remove(), 4200);
 }
 async function runAction(action, successMessage) {
-  if (state.busy) return;
+  if (state.busy) return false;
   state.busy = true;
   try {
     await action();
     if (successMessage) toast(successMessage, "success");
     await refreshOverview();
     await refreshDetail();
+    return true;
   } catch (error) {
     toast(error.message || "操作失败。", "error");
+    return false;
   } finally { state.busy = false; }
 }
 async function shutdownService() {
@@ -140,6 +167,15 @@ async function deleteSelectedProfile() {
 function openDialog(id) { const dialog = el(id); if (dialog && !dialog.open) dialog.showModal(); }
 function closeDialog(id) { const dialog = el(id); if (dialog && dialog.open) dialog.close(); }
 
+function showCaptchaRequiredDialog(task) {
+  if (task.status !== "failed" || task.last_safe_error_category !== "captcha_required") return;
+  const alertKey = `${task.task_id}:${task.updated_at}`;
+  if (state.captchaAlertKey === alertKey) return;
+  state.captchaAlertKey = alertKey;
+  const dialog = el("captchaRequiredDialog");
+  if (dialog && !dialog.open) dialog.showModal();
+}
+
 function showAuthenticationHint() {
   const hint = state.authenticationHint;
   const target = el("authCaptureHint");
@@ -149,83 +185,343 @@ function showAuthenticationHint() {
   openDialog("authCaptureDialog");
 }
 function startAuthentication(task, retryFailed) {
-  showAuthenticationHint();
-  return runAction(
-    () => api(`/api/tasks/${task.task_id}/authenticate`, { method: "POST", body: retryFailed ? { retry_failed: true } : {} }),
-    "已加入登录验证队列。"
-  );
+  if (task.task_type !== "course") {
+    showAuthenticationHint();
+    return runAction(
+      () => api(`/api/tasks/${encodeURIComponent(task.task_id)}/authenticate`, { method: "POST", body: retryFailed ? { retry_failed: true } : {} }),
+      "已加入登录验证队列。"
+    );
+  }
+  return runAction(async () => {
+    state.courseQr = null;
+    state.courseCatalogs.delete(task.task_id);
+    state.courseCatalogSelection.delete(task.task_id);
+    await api(`/api/tasks/${encodeURIComponent(task.task_id)}/authenticate`, { method: "POST", body: retryFailed ? { retry_failed: true } : {} });
+    void pollCourseAuthentication(task.task_id);
+  }, "请使用下方二维码登录智慧树。");
+}
+
+async function pollCourseAuthentication(taskId) {
+  for (let attempt = 0; attempt < 720; attempt += 1) {
+    try {
+      const result = await api(`/api/tasks/${encodeURIComponent(taskId)}/course/authentication`);
+      const nextQr = result.state === "waiting_qr" && result.qr ? result.qr : null;
+      if (nextQr !== state.courseQr) {
+        state.courseQr = nextQr;
+        if (state.detail?.task?.task_id === taskId) renderCourseDetail(state.detail.task);
+      }
+      if (result.state === "authenticated") {
+        state.courseQr = null;
+        await refreshOverview(); await refreshDetail(true);
+        toast("二维码登录成功，请抓取课程目录。", "success");
+        return;
+      }
+      if (result.state === "failed") { toast(result.error || "二维码登录失败。", "error"); await refreshDetail(true); return; }
+    } catch (error) { toast(error.message || "读取登录状态失败。", "error"); return; }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  toast("二维码等待超时，请重新登录。", "error");
+}
+
+async function fetchCourseCatalog(task) {
+  let warnings = [];
+  let empty = false;
+  const succeeded = await runAction(async () => {
+    const result = await api(`/api/tasks/${encodeURIComponent(task.task_id)}/course/catalog`);
+    state.courseCatalogs.set(task.task_id, Array.isArray(result.courses) ? result.courses : []);
+    state.courseCatalogSelection.delete(task.task_id);
+    warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    empty = (state.courseCatalogs.get(task.task_id) || []).length === 0;
+    if (state.detail?.task?.task_id === task.task_id) renderCourseDetail(state.detail.task);
+  }, null);
+  // runAction owns the error toast; never turn a rejected or skipped request
+  // into the success toast below (a catalog failure previously looked like
+  // "课程目录已抓取" while the picker stayed empty).
+  if (!succeeded) return;
+  if (warnings.length) {
+    const modes = warnings.map((item) => ({ shared: "共享课", hike: "校内课", ai: "AI 课程" })[item.mode] || item.mode).join("、");
+    toast(`${modes}目录读取失败；成功读取的课程仍可选择。`, "error");
+  } else if (empty) toast("账号课程目录为空。", "info");
+  else toast("课程目录已抓取。", "success");
+}
+
+async function selectCatalogCourse(task, course) {
+  const currentCourse = state.detail?.task?.task_id === task.task_id ? state.detail.course : null;
+  const currentOptions = currentCourse?.options || {};
+  const values = {
+    ...course,
+    speed: currentOptions.speed ?? 1.5,
+    threshold: currentOptions.threshold ?? 0.91,
+    time_limit_minutes: currentOptions.time_limit_minutes ?? 0,
+    process_exam: currentOptions.process_exam ?? true,
+    model_profile_id: course.mode === "ai"
+      ? (currentCourse?.mode === "ai" && task.model_profile_id ? task.model_profile_id : (state.profiles.find((profile) => profile.is_default)?.profile_id || null))
+      : null
+  };
+  const succeeded = await runAction(() => api(`/api/tasks/${encodeURIComponent(task.task_id)}/course/select`, { method: "POST", body: values }), "课程已选择。");
+  if (!succeeded) return;
+  state.courseCatalogs.delete(task.task_id);
+  state.courseCatalogSelection.delete(task.task_id);
+  state.courseOutlines.delete(task.task_id);
+  state.courseOutlineErrors.delete(task.task_id);
+  state.courseOutlineViews.delete(task.task_id);
+  await refreshOverview(); await refreshDetail(true);
+}
+
+function courseCatalogKey(course) {
+  return `${course.mode || ""}|${course.course_id || ""}|${course.class_id || ""}`;
+}
+function renderCourseCatalogPicker(task, courses) {
+  const section = card("选择要学习的课程");
+  section.classList.add("course-catalog-picker");
+  section.appendChild(node("p", "form-hint", `账号中找到 ${courses.length} 门课程。选择一门后确认，即可查看学习目录。`));
+  const toolbar = node("div", "course-catalog-toolbar");
+  const search = node("input", "course-catalog-search");
+  search.type = "search";
+  search.placeholder = "搜索课程名称";
+  search.setAttribute("aria-label", "搜索课程");
+  search.value = state.courseCatalogQueries.get(task.task_id) || "";
+  const filter = node("div", "course-catalog-filters");
+  filter.setAttribute("role", "group");
+  filter.setAttribute("aria-label", "按课程类型筛选");
+  const currentFilter = state.courseCatalogFilters.get(task.task_id) || "all";
+  [["all", "全部"], ["shared", "共享课"], ["hike", "校内课"], ["ai", "AI 课程"]].forEach(([value, label]) => {
+    const count = value === "all" ? courses.length : courses.filter((item) => item.mode === value).length;
+    const button = node("button", `course-catalog-filter${currentFilter === value ? " selected" : ""}`, `${label} ${count}`);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(currentFilter === value));
+    button.addEventListener("click", () => {
+      state.courseCatalogFilters.set(task.task_id, value);
+      filter.querySelectorAll("button").forEach((item) => {
+        const selected = item === button;
+        item.classList.toggle("selected", selected);
+        item.setAttribute("aria-pressed", String(selected));
+      });
+      applyCourseCatalogFilter(section, task.task_id);
+    });
+    filter.appendChild(button);
+  });
+  toolbar.append(search, filter);
+  section.appendChild(toolbar);
+
+  const list = node("div", "course-catalog-list");
+  const selectedCourse = state.courseCatalogSelection.get(task.task_id);
+  courses.forEach((course) => {
+    const key = courseCatalogKey(course);
+    const modeLabel = ({ shared: "共享课", hike: "校内课", ai: "AI 课程" })[course.mode] || "网课";
+    const option = node("button", `course-option-card${selectedCourse && courseCatalogKey(selectedCourse) === key ? " selected" : ""}`);
+    option.type = "button";
+    option.dataset.courseMode = course.mode || "";
+    option.dataset.courseSearch = `${course.name || ""} ${course.course_id || ""} ${course.class_id || ""}`.toLocaleLowerCase();
+    option.setAttribute("aria-pressed", String(Boolean(selectedCourse && courseCatalogKey(selectedCourse) === key)));
+    option.append(node("span", "course-option-type", modeLabel), node("strong", "course-option-name", course.name || "未命名课程"));
+    option.appendChild(node("span", "course-option-meta", course.mode === "ai" ? `课程 ${course.course_id || "—"} · 班级 ${course.class_id || "—"}` : `课程编号 ${course.course_id || "—"}`));
+    option.addEventListener("click", () => {
+      state.courseCatalogSelection.set(task.task_id, course);
+      for (const cardItem of list.querySelectorAll(".course-option-card")) {
+        const selected = cardItem === option;
+        cardItem.classList.toggle("selected", selected);
+        cardItem.setAttribute("aria-pressed", String(selected));
+      }
+      const confirm = section.querySelector("[data-confirm-course]");
+      if (confirm) confirm.disabled = false;
+    });
+    list.appendChild(option);
+  });
+  const empty = node("p", "form-hint course-catalog-empty", courses.length ? "没有匹配的课程。" : "课程列表为空。可以重新读取，或检查智慧树登录状态。");
+  empty.hidden = courses.length > 0;
+  list.appendChild(empty);
+  search.addEventListener("input", () => {
+    state.courseCatalogQueries.set(task.task_id, search.value);
+    applyCourseCatalogFilter(section, task.task_id);
+  });
+  section.appendChild(list);
+  const actions = actionRow();
+  const confirm = actionButton("确认选择课程", () => {
+    const course = state.courseCatalogSelection.get(task.task_id);
+    if (course) void selectCatalogCourse(task, course);
+  });
+  confirm.dataset.confirmCourse = "true";
+  confirm.disabled = !selectedCourse;
+  actions.appendChild(confirm);
+  if (taskCourseIsSelected(task)) {
+    actions.appendChild(actionButton("取消更换", () => {
+      state.courseCatalogs.delete(task.task_id);
+      state.courseCatalogSelection.delete(task.task_id);
+      renderCourseDetail(state.detail.task);
+    }, "quiet"));
+  }
+  if (!courses.length) actions.appendChild(actionButton("重新读取课程列表", () => fetchCourseCatalog(task), "secondary"));
+  section.appendChild(actions);
+  applyCourseCatalogFilter(section, task.task_id);
+  return section;
+}
+function taskCourseIsSelected(task) {
+  const course = state.detail?.task?.task_id === task.task_id ? state.detail.course : null;
+  return Boolean(course?.mode && course?.course_id);
+}
+function applyCourseCatalogFilter(section, taskId) {
+  const query = (state.courseCatalogQueries.get(taskId) || "").trim().toLocaleLowerCase();
+  const filter = state.courseCatalogFilters.get(taskId) || "all";
+  let visible = 0;
+  for (const option of section.querySelectorAll(".course-option-card")) {
+    const matches = (filter === "all" || option.dataset.courseMode === filter) && (!query || option.dataset.courseSearch.includes(query));
+    option.hidden = !matches;
+    if (matches) visible += 1;
+  }
+  const empty = section.querySelector(".course-catalog-empty");
+  if (empty && state.courseCatalogs.get(taskId)?.length) {
+    empty.hidden = visible > 0;
+    empty.textContent = visible ? "" : "没有匹配的课程。";
+  }
 }
 
 function renderMeta() {
   const siteFilter = el("siteFilter");
   clear(siteFilter);
   siteFilter.appendChild(new Option("全部站点", ""));
-  for (const adapter of state.meta.adapters) siteFilter.appendChild(new Option(adapter.label, adapter.site_id));
+  const taskFilter = el("typeFilter").value;
+  for (const adapter of state.meta.adapters.filter((item) => !taskFilter || item.task_types.includes(taskFilter))) siteFilter.appendChild(new Option(adapter.label, adapter.site_id));
   const statusFilter = el("statusFilter");
   clear(statusFilter);
   statusFilter.appendChild(new Option("全部状态", ""));
   for (const [value, label] of Object.entries(STATUS_LABELS)) statusFilter.appendChild(new Option(label, value));
   const newSite = el("newTaskForm").elements.site_id;
   clear(newSite);
-  for (const adapter of state.meta.adapters) newSite.appendChild(new Option(adapter.label, adapter.site_id));
+  applyTaskType();
+}
+function applyTaskType(taskType = el("newTaskForm").elements.task_type.value) {
+  const form = el("newTaskForm");
+  form.elements.task_type.value = taskType;
+  const course = taskType === "course";
+  form.querySelector('[data-section="homework"]').hidden = course;
+  form.querySelector('[data-section="course"]').hidden = !course;
+  form.elements.page_url.required = !course;
+  const site = form.elements.site_id;
+  const previous = site.value;
+  const allowed = state.meta.adapters.filter((item) => item.task_types.includes(taskType));
+  clear(site);
+  for (const adapter of allowed) site.appendChild(new Option(adapter.label, adapter.site_id));
+  if (allowed.some((item) => item.site_id === previous)) site.value = previous;
+  else if (allowed.length) site.value = allowed[0].site_id;
+  document.querySelectorAll(".type-switch-button").forEach((button) => button.classList.toggle("selected", button.dataset.taskType === taskType));
+  if (el("typeFilter")) {
+    const filter = el("typeFilter").value;
+    const siteFilter = el("siteFilter");
+    const selected = siteFilter.value;
+    clear(siteFilter);
+    siteFilter.appendChild(new Option("全部站点", ""));
+    for (const adapter of state.meta.adapters.filter((item) => !filter || item.task_types.includes(filter))) siteFilter.appendChild(new Option(adapter.label, adapter.site_id));
+    if ([...siteFilter.options].some((option) => option.value === selected)) siteFilter.value = selected;
+  }
 }
 function renderProfileOptions() {
   const select = el("newTaskForm").elements.model_profile_id;
+  const signature = state.profiles.map((profile) => [profile.profile_id, profile.name, profile.version, profile.is_default].join("\u0001")).join("\u0002");
+  if (select.dataset.profileSignature === signature) return;
   const current = select.value;
   clear(select);
   select.appendChild(new Option("稍后选择", ""));
   for (const profile of state.profiles) select.appendChild(new Option(`${profile.name} · v${profile.version}`, profile.profile_id));
   if ([...select.options].some((option) => option.value === current)) select.value = current;
+  select.dataset.profileSignature = signature;
 }
 function renderTaskList() {
   const list = el("taskList");
   const search = el("taskSearch").value.trim().toLowerCase();
   const site = el("siteFilter").value;
+  const type = el("typeFilter").value;
   const status = el("statusFilter").value;
   const tasks = state.tasks.filter((task) => {
+    if (type && task.task_type !== type) return false;
     if (site && task.site_id !== site) return false;
     if (status && task.status !== status) return false;
     if (!search) return true;
     return `${task.title} ${task.site_id} ${siteLabel(task.site_id)}`.toLowerCase().includes(search);
   });
-  const signature = tasks
-    .map((task) => [task.task_id, task.status, task.title, task.site_id, task.updated_at, task.queue_state, task.queue_position].join("\u0001"))
-    .join("\u0002");
-  if (signature === state.taskListSignature && list.childElementCount) {
-    for (const card of list.querySelectorAll(".task-card")) {
-      card.classList.toggle("selected", card.dataset.taskId === state.activeTaskId);
-    }
-    return;
-  }
-  state.taskListSignature = signature;
-  closeTaskMenu();
-  clear(list);
+  const sort = el("sortFilter")?.value || "updated_desc";
+  tasks.sort((left, right) => {
+    if (sort === "title_asc") return String(left.title || "").localeCompare(String(right.title || ""), "zh-CN");
+    const difference = (Date.parse(right.updated_at || "") || 0) - (Date.parse(left.updated_at || "") || 0);
+    return sort === "updated_asc" ? -difference : difference;
+  });
+  const existing = new Map([...list.querySelectorAll(":scope > .task-card")].map((card) => [card.dataset.taskId, card]));
+  if (tasks.length) list.querySelector(":scope > .task-list-empty")?.remove();
+  let position = 0;
   for (const task of tasks) {
-    const card = node("div", "task-card");
-    card.dataset.taskId = task.task_id;
-    if (task.task_id === state.activeTaskId) card.classList.add("selected");
-    const main = node("button", "task-card-main");
-    main.type = "button";
-    const top = node("span", "task-card-top");
-    top.appendChild(node("span", "task-card-title", task.title));
-    top.appendChild(statusBadge(task));
-    const meta = node("span", "task-card-meta");
-    meta.appendChild(node("span", "", siteLabel(task.site_id)));
-    meta.appendChild(node("span", "", WIZARD_LABELS[wizardStepForTask(task)] || STEP_LABELS[task.current_step] || task.current_step));
-    meta.appendChild(node("span", "", formatTime(task.updated_at)));
-    main.append(top, meta);
-    main.addEventListener("click", () => selectTask(task.task_id));
-    const menuButton = node("button", "task-card-menu");
-    menuButton.type = "button";
-    menuButton.setAttribute("aria-label", `任务操作：${task.title}`);
-    menuButton.setAttribute("aria-haspopup", "menu");
-    menuButton.setAttribute("aria-expanded", "false");
-    menuButton.appendChild(kebabIcon());
-    menuButton.addEventListener("click", (event) => { event.stopPropagation(); openTaskMenu(task, menuButton); });
-    card.append(main, menuButton);
-    list.appendChild(card);
+    const signature = taskCardSignature(task);
+    let card = existing.get(task.task_id);
+    existing.delete(task.task_id);
+    if (!card || card.dataset.cardSignature !== signature) {
+      const focused = card?.contains(document.activeElement) ? document.activeElement : null;
+      const focusSelector = focused?.classList.contains("task-card-menu") ? ".task-card-menu"
+        : (focused?.classList.contains("task-card-main") ? ".task-card-main" : null);
+      if (taskMenuTaskId === task.task_id) closeTaskMenu();
+      const replacement = renderTaskCard(task, signature);
+      if (card) card.replaceWith(replacement);
+      card = replacement;
+      if (focusSelector) card.querySelector(focusSelector)?.focus({ preventScroll: true });
+    }
+    card.classList.toggle("selected", card.dataset.taskId === state.activeTaskId);
+    const progress = card.querySelector("[data-task-course-progress]");
+    if (progress && typeof task.progress_percent === "number" && progress.textContent !== `${task.progress_percent}%`) progress.textContent = `${task.progress_percent}%`;
+    const updated = card.querySelector("[data-task-updated-at]");
+    const updatedText = formatTime(task.updated_at);
+    if (updated && updated.textContent !== updatedText) updated.textContent = updatedText;
+    const atPosition = list.children[position] || null;
+    if (card !== atPosition) list.insertBefore(card, atPosition);
+    position += 1;
   }
-  if (!tasks.length) list.appendChild(node("p", "form-hint", "没有匹配的任务。"));
+  for (const [taskId, card] of existing) {
+    if (taskMenuTaskId === taskId) closeTaskMenu();
+    card.remove();
+  }
+  if (!tasks.length && !list.querySelector(":scope > .task-list-empty")) {
+    list.appendChild(node("p", "form-hint task-list-empty", "没有匹配的任务。"));
+  }
+}
+function taskCardSignature(task) {
+  return [task.status, task.title, task.site_id, task.queue_state, task.queue_position, task.task_type,
+    task.current_step, task.last_operation, task.run_id, typeof task.progress_percent === "number"].join("\u0001");
+}
+function renderTaskCard(task, signature) {
+  const card = node("div", "task-card");
+  card.dataset.taskId = task.task_id;
+  card.dataset.cardSignature = signature;
+  if (task.task_id === state.activeTaskId) card.classList.add("selected");
+  const main = node("button", "task-card-main");
+  main.type = "button";
+  const top = node("span", "task-card-top");
+  const heading = node("span", "task-card-heading");
+  heading.appendChild(node("span", "task-type-label", task.task_type === "course" ? "网课" : "做题"));
+  heading.appendChild(node("span", "task-card-title", task.title));
+  top.appendChild(heading);
+  top.appendChild(statusBadge(task));
+  const meta = node("span", "task-card-meta");
+  meta.appendChild(node("span", "", siteLabel(task.site_id)));
+  const stepLabel = task.task_type === "course"
+    ? (COURSE_STEP_LABELS[task.current_step] || task.current_step)
+    : (WIZARD_LABELS[wizardStepForTask(task)] || STEP_LABELS[task.current_step] || task.current_step);
+  meta.appendChild(node("span", "", stepLabel));
+  if (task.task_type === "course" && typeof task.progress_percent === "number") {
+    const progress = node("span", "", `${task.progress_percent}%`);
+    progress.dataset.taskCourseProgress = "true";
+    meta.appendChild(progress);
+  }
+  const updated = node("span", "", formatTime(task.updated_at));
+  updated.dataset.taskUpdatedAt = "true";
+  meta.appendChild(updated);
+  main.append(top, meta);
+  main.addEventListener("click", () => selectTask(task.task_id));
+  const menuButton = node("button", "task-card-menu");
+  menuButton.type = "button";
+  menuButton.setAttribute("aria-label", `任务操作：${task.title}`);
+  menuButton.setAttribute("aria-haspopup", "menu");
+  menuButton.setAttribute("aria-expanded", "false");
+  menuButton.appendChild(kebabIcon());
+  menuButton.addEventListener("click", (event) => { event.stopPropagation(); openTaskMenu(task, menuButton); });
+  card.append(main, menuButton);
+  return card;
 }
 function kebabIcon() {
   const namespace = "http://www.w3.org/2000/svg";
@@ -266,7 +562,9 @@ function openTaskMenu(task, anchor) {
   const reopen = taskMenuTaskId === task.task_id;
   closeTaskMenu();
   if (reopen) return;
-  const busy = Boolean(task.queue_state);
+  const busy = task.task_type === "course"
+    ? ["running", "stopping"].includes(task.status)
+    : Boolean(task.queue_state);
   const menu = node("div", "task-menu");
   menu.setAttribute("role", "menu");
   const archive = node("button", "", "归档任务");
@@ -275,7 +573,8 @@ function openTaskMenu(task, anchor) {
   archive.disabled = busy || task.status === "archived";
   archive.title = busy ? "有等待或运行中的操作，暂不能归档" : "";
   archive.addEventListener("click", () => { closeTaskMenu(); archiveTask(task); });
-  const remove = node("button", "danger", task.run_id ? "删除任务与题包" : "删除任务");
+  const removeLabel = task.task_type === "course" ? "删除运行记录" : (task.run_id ? "删除任务与题包" : "删除任务");
+  const remove = node("button", "danger", removeLabel);
   remove.type = "button";
   remove.setAttribute("role", "menuitem");
   remove.disabled = busy;
@@ -301,12 +600,23 @@ function renderQueueSummary() {
   const summary = el("queueSummary");
   const active = state.queue.find((item) => item.state === "active");
   const queued = state.queue.filter((item) => item.state === "queued").length;
-  if (!active && !queued) { summary.hidden = true; return; }
+  if (!active && !queued) {
+    summary.hidden = true;
+    summary.dataset.summaryText = "";
+    return;
+  }
   const task = state.tasks.find((item) => item.task_id === active?.task_id);
-  summary.hidden = false;
-  summary.replaceChildren(node("span", "dot"), node("span", "", active
+  const text = active
     ? `${task?.title || "任务"} · ${active.operation}${queued ? ` · 另 ${queued} 项` : ""}`
-    : `${queued} 项等待执行`));
+    : `${queued} 项等待执行`;
+  summary.hidden = false;
+  if (summary.dataset.summaryText === text && summary.childElementCount === 2) return;
+  if (summary.childElementCount === 2) {
+    summary.lastElementChild.textContent = text;
+  } else {
+    summary.replaceChildren(node("span", "dot"), node("span", "", text));
+  }
+  summary.dataset.summaryText = text;
 }
 async function refreshOverview() {
   if (state.shuttingDown || state.overviewRefreshing) return;
@@ -321,18 +631,24 @@ async function refreshOverview() {
     state.tasks = overview.tasks;
     state.queue = overview.queue;
     state.profiles = profiles.profiles;
-    el("serviceStatus").textContent = "已连接";
-    el("serviceStatus").className = "service-status ready";
+    const serviceStatus = el("serviceStatus");
+    if (serviceStatus.textContent !== "已连接") serviceStatus.textContent = "已连接";
+    if (serviceStatus.className !== "service-status ready") serviceStatus.className = "service-status ready";
     if (!state.activeTaskId && state.tasks.length) state.activeTaskId = state.tasks[0].task_id;
-    if (state.activeTaskId && !state.tasks.some((task) => task.task_id === state.activeTaskId)) state.activeTaskId = state.tasks[0]?.task_id || null;
+    if (state.activeTaskId && !state.tasks.some((task) => task.task_id === state.activeTaskId)) {
+      const current = state.detail?.task;
+      const currentTaskStillUsable = current?.task_id === state.activeTaskId && current.status !== "archived";
+      if (!currentTaskStillUsable) state.activeTaskId = state.tasks[0]?.task_id || null;
+    }
     renderTaskList();
     renderQueueSummary();
     renderProfileOptions();
     renderProfileList();
   } catch (error) {
     if (!state.shuttingDown) {
-      el("serviceStatus").textContent = "未连接";
-      el("serviceStatus").className = "service-status error";
+      const serviceStatus = el("serviceStatus");
+      if (serviceStatus.textContent !== "未连接") serviceStatus.textContent = "未连接";
+      if (serviceStatus.className !== "service-status error") serviceStatus.className = "service-status error";
     }
   } finally {
     state.overviewRefreshing = false;
@@ -342,9 +658,12 @@ async function selectTask(taskId) {
   state.activeTaskId = taskId;
   localStorage.setItem("autolearn.activeTask", taskId);
   state.detail = null; state.detailTaskId = null; state.detailRevision = null;
+  state.detailEventRevision = null;
   state.review = null; state.reviewError = null; state.answerMap = new Map();
   state.confirmationId = null; state.modelAuthorizationId = null; state.submitPending = null;
   state.wizardTaskId = null; state.wizardStep = null; state.wizardDerivedStep = null;
+  state.courseOptionsEditing = false;
+  state.courseDetailsOpen = false;
   state.runtimeEvents = []; state.runtimeSequence = 0;
   renderTaskList();
   await refreshDetail();
@@ -352,71 +671,154 @@ async function selectTask(taskId) {
 
 async function refreshDetail(force = false) {
   if (state.shuttingDown) return;
-  if (!state.activeTaskId) { renderEmptyDetail(); return; }
+  if (!state.activeTaskId) {
+    state.detail = null;
+    state.detailTaskId = null;
+    state.detailRevision = null;
+    state.detailEventRevision = null;
+    renderEmptyDetail();
+    return;
+  }
   if (state.detailRefreshing) return;
   state.detailRefreshing = true;
   const taskId = state.activeTaskId;
   const switchedTask = state.detailTaskId !== taskId;
   if (switchedTask) {
     state.detailTaskId = taskId;
+    state.detailEventRevision = null;
     state.review = null; state.reviewError = null; state.answerMap = new Map();
     state.submitPending = null;
     state.wizardTaskId = null; state.wizardStep = null; state.wizardDerivedStep = null;
     state.runtimeEvents = []; state.runtimeSequence = 0;
     state.authenticationHint = null;
+    state.courseOptionsEditing = false;
+    state.courseDetailsOpen = false;
   }
   try {
     const detail = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
     if (state.activeTaskId !== taskId) return;
-    const revision = [detail.task.updated_at, detail.task.status, detail.task.queue_state, detail.task.queue_position, detail.task.interaction_retry_authorized].join("|");
+    const revision = detail.task.task_type === "course"
+      ? [detail.task.task_id, detail.task.title, detail.task.site_id, detail.task.status,
+        detail.task.current_step, detail.course?.mode, detail.course?.course_id,
+        detail.course?.class_id, detail.course?.course_name, detail.course?.phase,
+        detail.course?.run_id, detail.task.model_profile_id, JSON.stringify(detail.course?.options || {}),
+        detail.cookie_status?.captured, detail.cookie_status?.configured].join("|")
+      : [detail.task.task_id, detail.task.title, detail.task.site_id, detail.task.status, detail.task.current_step,
+        detail.task.last_operation, detail.task.run_id, detail.task.model_profile_id, detail.task.queue_state,
+        detail.task.queue_position, detail.task.interaction_retry_authorized, detail.task.pending_operation].join("|");
+    const eventRevision = JSON.stringify((detail.events || []).map((event) => [
+      event.sequence, event.occurred_at, event.event_type, event.from_status, event.to_status, event.safe_error_category
+    ]));
     const changed = force || revision !== state.detailRevision;
+    const eventsChanged = eventRevision !== state.detailEventRevision;
+    const previousRunId = state.detail?.task?.task_id === taskId ? state.detail.course?.run_id : null;
     state.detail = detail;
+    if (detail.task.task_type === "course" && previousRunId !== detail.course?.run_id) {
+      state.courseOutlines.delete(taskId);
+      state.courseOutlineErrors.delete(taskId);
+    }
     state.cookieStatus = detail.cookie_status || { captured: false, configured: false };
     state.authenticationHint = detail.task.authentication_hint || null;
-    const runtime = await api(`/api/tasks/${encodeURIComponent(taskId)}/runtime-events?after=${switchedTask ? 0 : state.runtimeSequence}`);
+    let runtime = { events: [], latest_sequence: state.runtimeSequence };
+    try {
+      runtime = await api(`/api/tasks/${encodeURIComponent(taskId)}/runtime-events?after=${switchedTask ? 0 : state.runtimeSequence}`);
+    } catch (_) {
+      // Runtime events are optional UI data. A transient event-store failure must
+      // not turn a valid task detail into the unavailable screen.
+    }
     if (state.activeTaskId !== taskId) return;
     for (const event of runtime.events || []) {
       if (event.task_id === taskId) state.runtimeEvents.push(event);
     }
     state.runtimeEvents = state.runtimeEvents.slice(-300);
     state.runtimeSequence = runtime.latest_sequence ?? state.runtimeSequence;
-    syncWizardStep(detail.task);
-    if (changed) {
-      state.detailRevision = revision;
+    if (detail.task.task_type === "course") {
+      if (detail.task.status !== "ready") state.courseOptionsEditing = false;
       state.review = null; state.reviewError = null; state.answerMap = new Map();
-      if (REVIEW_STATUSES.has(detail.task.status) || detail.task.status === "ready_for_interaction") {
+      state.confirmationId = null; state.modelAuthorizationId = null; state.submitPending = null;
+    } else {
+      syncWizardStep(detail.task);
+      if (changed) {
+        state.detailRevision = revision;
+        state.review = null; state.reviewError = null; state.answerMap = new Map();
+        if (REVIEW_STATUSES.has(detail.task.status) || detail.task.status === "ready_for_interaction") {
+          try {
+            state.review = await api(`/api/tasks/${encodeURIComponent(taskId)}/review`);
+            buildAnswerMap(detail, state.review);
+          } catch (error) { state.reviewError = error.message; }
+        }
+      }
+      if (detail.task.status === "waiting_model_authorization" || (detail.task.status === "paused" && detail.task.pending_operation === "solve")) {
         try {
-          state.review = await api(`/api/tasks/${encodeURIComponent(taskId)}/review`);
-          buildAnswerMap(detail, state.review);
-        } catch (error) { state.reviewError = error.message; }
+          const pending = await api(`/api/tasks/${encodeURIComponent(taskId)}/model-authorization`);
+          if (pending.pending) showModelAuthorization(pending.pending);
+        } catch (_) {
+          // Keep the task detail visible while the authorization summary retries.
+        }
+      }
+      if (detail.task.status === "awaiting_submit_confirmation") {
+        try {
+          const pending = await api(`/api/tasks/${encodeURIComponent(taskId)}/submit-confirmation`);
+          state.submitPending = pending.pending || null;
+          if (pending.pending) showSubmitConfirmation(pending.pending);
+        } catch (_) {
+          // The confirmation endpoint is auxiliary; preserve the loaded task view.
+        }
+      } else {
+        state.submitPending = null;
       }
     }
-    if (detail.task.status === "waiting_model_authorization" || (detail.task.status === "paused" && detail.task.pending_operation === "solve")) {
-      const pending = await api(`/api/tasks/${encodeURIComponent(taskId)}/model-authorization`);
-      if (pending.pending) showModelAuthorization(pending.pending);
-    }
-    if (detail.task.status === "awaiting_submit_confirmation") {
-      const pending = await api(`/api/tasks/${encodeURIComponent(taskId)}/submit-confirmation`);
-      state.submitPending = pending.pending || null;
-      if (pending.pending) showSubmitConfirmation(pending.pending);
+    if (changed) state.detailRevision = revision;
+    if (changed) {
+      renderDetail();
     } else {
-      state.submitPending = null;
+      if (eventsChanged) updateEventCard();
+      const updated = el("detailPane").querySelector("[data-detail-updated-at]");
+      const updatedText = `更新 ${formatTime(detail.task.updated_at)}`;
+      if (updated && updated.textContent !== updatedText) updated.textContent = updatedText;
+      if (detail.task.task_type === "course") updateCourseProgress(detail.task);
+      else updateSolveProgress();
     }
-    if (changed) renderDetail();
+    if (detail.task.task_type === "course") showCaptchaRequiredDialog(detail.task);
+    state.detailEventRevision = eventRevision;
+    if (detail.task.task_type === "course" && detail.course?.mode && detail.course?.course_id) {
+      void loadCourseOutline(taskId);
+    }
   } catch (error) {
-    if (state.activeTaskId === taskId) renderEmptyDetail(error.message);
+    if (state.activeTaskId === taskId) {
+      const hasCurrentDetail = state.detail?.task?.task_id === taskId;
+      if (!hasCurrentDetail) renderEmptyDetail(error.message);
+    }
   } finally {
     state.detailRefreshing = false;
   }
 }
 function renderEmptyDetail(errorMessage) {
   const pane = el("detailPane");
+  const key = `${state.activeTaskId || ""}\u0000${errorMessage ? "unavailable" : "empty"}`;
+  state.detailRevision = null;
+  state.detailEventRevision = null;
+  if (pane.dataset.emptyStateKey === key && pane.childElementCount) {
+    const message = pane.querySelector("[data-empty-error]");
+    if (message && message.textContent !== errorMessage) message.textContent = errorMessage;
+    return;
+  }
+  pane.dataset.emptyStateKey = key;
   clear(pane);
   const empty = node("div", "empty-workspace");
-  empty.appendChild(node("div", "empty-symbol", "AL"));
+  const logo = node("img", "empty-logo");
+  logo.src = "/static/logo.svg?v=2";
+  logo.alt = "";
+  empty.appendChild(logo);
   empty.appendChild(node("h2", "", errorMessage ? "任务暂不可用" : "选择一个任务"));
-  if (errorMessage) empty.appendChild(node("p", "", errorMessage));
+  if (errorMessage) {
+    const message = node("p", "", errorMessage);
+    message.dataset.emptyError = "true";
+    empty.appendChild(message);
+  }
+  else empty.appendChild(actionButton("新建任务", openNewTask));
   pane.appendChild(empty);
+  playPaneEntrance(pane);
 }
 function buildAnswerMap(detail, review) {
   state.answerMap = new Map();
@@ -470,7 +872,12 @@ function addPageAction(row, label, handler, variant = "primary", disabled = fals
 function renderDetail() {
   if (!state.detail) return;
   const task = state.detail.task;
+  if (task.task_type === "course") {
+    renderCourseDetail(task);
+    return;
+  }
   const pane = el("detailPane");
+  delete pane.dataset.emptyStateKey;
   clear(pane);
   const header = node("header", "detail-header");
   const heading = node("div", "detail-title-wrap");
@@ -478,7 +885,9 @@ function renderDetail() {
   const meta = node("div", "detail-meta");
   meta.appendChild(statusBadge(task));
   meta.appendChild(node("span", "", siteLabel(task.site_id)));
-  meta.appendChild(node("span", "", `更新 ${formatTime(task.updated_at)}`));
+  const updated = node("span", "", `更新 ${formatTime(task.updated_at)}`);
+  updated.dataset.detailUpdatedAt = "true";
+  meta.appendChild(updated);
   heading.appendChild(meta);
   header.appendChild(heading);
   const refresh = node("button", "icon-button", "↻");
@@ -498,6 +907,682 @@ function renderDetail() {
   const queue = renderQueueLine();
   if (queue) pane.appendChild(queue);
   pane.appendChild(renderEventCard());
+  playPaneEntrance(pane);
+}
+function renderCourseStepper(task) {
+  const course = state.detail.course || {};
+  const options = course.options || {};
+  const steps = COURSE_STEPS.filter(([step]) => step !== "exam" || (course.mode === "ai" && options.process_exam));
+  const currentStep = course.phase || task.current_step;
+  const currentIndex = steps.findIndex(([step]) => step === currentStep);
+  const stepper = node("div", "stepper course-stepper");
+  steps.forEach(([step, label], index) => {
+    const item = node("div", "step", label);
+    if (currentIndex >= 0 && index < currentIndex) item.classList.add("done");
+    if (index === currentIndex) {
+      item.classList.add("current");
+      item.setAttribute("aria-current", "step");
+    }
+    if (currentIndex >= 0 && index === currentIndex + 1) item.classList.add("reached");
+    stepper.appendChild(item);
+  });
+  return stepper;
+}
+function renderCourseDetail(task) {
+  const detail = state.detail;
+  const course = detail.course || {};
+  const options = course.options || {};
+  const hasCourse = Boolean(course.mode && course.course_id);
+  const pane = el("detailPane");
+  delete pane.dataset.emptyStateKey;
+  clear(pane);
+  const header = node("header", "detail-header");
+  const heading = node("div", "detail-title-wrap");
+  heading.appendChild(node("h2", "detail-title", task.title));
+  const meta = node("div", "detail-meta");
+  meta.append(statusBadge(task), node("span", "", siteLabel(task.site_id)));
+  const updated = node("span", "", `更新 ${formatTime(task.updated_at)}`);
+  updated.dataset.courseUpdatedAt = "true";
+  meta.appendChild(updated);
+  heading.appendChild(meta);
+  header.appendChild(heading);
+  const refresh = node("button", "icon-button", "↻");
+  refresh.type = "button";
+  refresh.title = "刷新";
+  refresh.setAttribute("aria-label", "刷新课程详情");
+  refresh.addEventListener("click", () => refreshDetail(true));
+  header.appendChild(refresh);
+  pane.append(header, renderCourseStepper(task));
+  if (state.courseQr && state.detailTaskId === task.task_id) {
+    const qrCard = card("智慧树二维码登录");
+    const image = node("img", "course-login-qr");
+    image.alt = "智慧树登录二维码";
+    image.src = `data:image/png;base64,${state.courseQr}`;
+    qrCard.append(image, node("p", "form-hint", "使用智慧树 App 扫码。登录完成后，这里会出现你的课程列表。"));
+    pane.appendChild(qrCard);
+  }
+
+  const modeLabels = { shared: "共享课", hike: "爬课", ai: "AI 课程" };
+  const actions = actionRow();
+  if (!hasCourse) {
+    const setup = card("连接你的智慧树账号");
+    if (task.status === "draft") {
+      setup.appendChild(statusLine("info", "先扫码登录，系统会读取账号可用的课程目录。"));
+      addPageAction(actions, "二维码登录", () => startAuthentication(task, false));
+    } else if (task.status === "authenticating") {
+      setup.appendChild(statusLine("info", "等待扫码登录。请使用智慧树 App 扫描上方二维码。"));
+    } else if (task.status === "ready") {
+      setup.appendChild(state.cookieStatus.configured
+        ? statusLine("success", "账号已连接，可以读取课程列表。")
+        : statusLine("warning", "登录状态不可用，请重新扫码登录。"));
+      if (state.cookieStatus.configured) addPageAction(actions, "读取课程列表", () => fetchCourseCatalog(task));
+      addPageAction(actions, "重新登录", () => startAuthentication(task, false), "secondary");
+    } else if (task.status === "failed") {
+      setup.appendChild(statusLine("danger", "上次登录没有完成，请重新登录后继续。"));
+      addPageAction(actions, "重新登录", () => startAuthentication(task, true));
+    } else {
+      setup.appendChild(statusLine("info", "登录后即可选择要学习的课程。"));
+    }
+    if (actions.childElementCount) setup.appendChild(actions);
+    pane.appendChild(setup);
+    const catalog = state.courseCatalogs.get(task.task_id);
+    if (task.status === "ready" && Array.isArray(catalog)) pane.appendChild(renderCourseCatalogPicker(task, catalog));
+    pane.appendChild(renderEventCard());
+    playPaneEntrance(pane);
+    return;
+  }
+
+  const summary = node("section", "content-card course-summary");
+  const summaryTop = node("div", "course-summary-top");
+  const courseTitle = node("div", "course-summary-title");
+  courseTitle.append(node("span", "course-mode-pill", modeLabels[course.mode] || "网课"), node("h3", "", course.course_name || task.title || "已选课程"));
+  summaryTop.append(courseTitle);
+  if (task.status === "ready" && !state.courseOptionsEditing) {
+    summaryTop.appendChild(actionButton("编辑运行参数", () => {
+      state.courseOptionsEditing = true;
+      state.courseDetailsOpen = true;
+      renderCourseDetail(task);
+    }, "secondary"));
+  }
+  summary.append(summaryTop);
+  const courseInfo = node("details", "course-details-disclosure");
+  courseInfo.open = state.courseOptionsEditing || state.courseDetailsOpen;
+  courseInfo.addEventListener("toggle", () => { state.courseDetailsOpen = courseInfo.open; });
+  const courseInfoSummary = node("summary", "", "查看课程与运行参数");
+  courseInfo.append(courseInfoSummary, facts([
+    ["课程 ID", course.course_id || "—"], ["班级 ID", course.class_id || "—"],
+    ["播放速度", options.speed ?? "—"], ["完成阈值", options.threshold ?? "—"],
+    ["运行时限", options.time_limit_minutes == null ? "—" : `${options.time_limit_minutes} 分钟`]
+  ]));
+  if (state.courseOptionsEditing) courseInfo.appendChild(renderCourseOptionsEditor(task, options));
+  summary.appendChild(courseInfo);
+  pane.appendChild(summary);
+  const catalog = state.courseCatalogs.get(task.task_id);
+  const changingCourse = task.status === "ready" && Array.isArray(catalog);
+  if (changingCourse) pane.appendChild(renderCourseCatalogPicker(task, catalog));
+  if (course.mode === "ai" && !task.model_profile_id) pane.appendChild(statusLine("warning", "开始前请在运行参数中选择模型档案。"));
+
+  if (task.status === "ready" && !state.cookieStatus.configured) {
+    pane.appendChild(statusLine("warning", "智慧树登录状态不可用，请重新扫码登录后再开始。"));
+  }
+  const captchaRequired = task.status === "failed" && task.last_safe_error_category === "captcha_required";
+  if (captchaRequired) {
+    pane.appendChild(statusLine("warning", "请在浏览器中自行打开智慧树网页并完成验证码；完成后返回此页重试。验证后不会自动续跑。"));
+  } else if (["partial", "failed"].includes(task.status)) {
+    pane.appendChild(statusLine("warning", "本次运行未全部完成；可以查看目录进度后重跑。"));
+  }
+
+  if (task.status === "ready") {
+    if (changingCourse) {
+      actions.appendChild(node("span", "form-hint", "确认新课程，或取消更换以保留当前课程。"));
+    } else {
+      addPageAction(actions, "开始学习", () => runAction(() => api(`/api/tasks/${encodeURIComponent(task.task_id)}/course/start`, { method: "POST", body: {} }), "课程已开始。"), "primary", !state.cookieStatus.configured || (course.mode === "ai" && !task.model_profile_id));
+      addPageAction(actions, "更换课程", () => fetchCourseCatalog(task), "secondary", !state.cookieStatus.configured);
+      addPageAction(actions, "重新登录", () => startAuthentication(task, false), "quiet");
+    }
+  } else if (task.status === "running") {
+    addPageAction(actions, "停止学习", () => stopTask(task), "danger");
+  } else if (task.status === "stopping") {
+    actions.appendChild(statusLine("warning", "正在安全停止课程…"));
+  } else if (["completed", "partial", "failed", "cancelled"].includes(task.status)) {
+    addPageAction(actions, captchaRequired ? "验证码完成后重试" : "重跑课程", () => runAction(() => api(`/api/tasks/${encodeURIComponent(task.task_id)}/course/rerun`, { method: "POST", body: {} }), "课程已重新运行。"));
+    addPageAction(actions, "归档", () => archiveTask(task), "secondary");
+  } else if (task.status === "archived") {
+    addPageAction(actions, "删除运行记录", () => openDeleteTaskDialog(task), "danger");
+  }
+  if (actions.childElementCount) {
+    const actionCard = node("section", "content-card course-primary-actions");
+    actionCard.appendChild(actions);
+    pane.appendChild(actionCard);
+  }
+
+  if (!changingCourse) {
+    const progress = node("section", "content-card course-progress-card");
+    const progressHeader = node("div", "course-progress-header");
+    const current = node("div", "course-progress-current", course.current_title ? `正在学习：${course.current_title}` : (task.status === "running" ? "正在准备学习内容…" : "尚未开始"));
+    current.dataset.courseCurrent = "true";
+    const percent = node("strong", "course-progress-percent", Number.isFinite(course.progress_percent) ? `${course.progress_percent}%` : "—");
+    percent.dataset.coursePercent = "true";
+    progressHeader.append(current, percent);
+    const track = node("div", "progress-track course-progress-track");
+    const fill = node("div", "progress-fill");
+    if (Number.isFinite(course.progress_percent)) fill.style.width = `${Math.max(0, Math.min(100, course.progress_percent))}%`;
+    else if (task.status === "running") fill.classList.add("indeterminate");
+    track.appendChild(fill);
+    const counts = node("div", "course-progress-meta");
+    const completed = node("span", "", `${course.completed_count ?? 0} / ${course.total_count ?? "—"} 项完成`);
+    completed.dataset.courseCompleted = "true";
+    const failed = node("span", "", `${course.failed_count ?? 0} 项失败`);
+    failed.dataset.courseFailed = "true";
+    const updatedAt = node("span", "course-progress-updated", `更新 ${formatTime(task.updated_at)}`);
+    updatedAt.dataset.courseUpdatedAt = "true";
+    counts.append(completed, failed, updatedAt);
+    progress.append(progressHeader, track, counts);
+    pane.appendChild(progress);
+    pane.appendChild(renderCourseOutlineCard(task));
+    updateCourseOutlineProgress(task);
+    updateCourseOutlineBody(task.task_id);
+  }
+  pane.appendChild(renderEventCard());
+  playPaneEntrance(pane);
+}
+function updateCourseProgress(task) {
+  const course = state.detail?.course || {};
+  const pane = el("detailPane");
+  const current = pane.querySelector("[data-course-current]");
+  const completed = pane.querySelector("[data-course-completed]");
+  const percent = pane.querySelector("[data-course-percent]");
+  const failed = pane.querySelector("[data-course-failed]");
+  const updated = pane.querySelector("[data-course-updated-at]");
+  const fill = pane.querySelector(".course-progress-track .progress-fill");
+  if (!current || !completed || !percent || !failed || !updated || !fill) return;
+  const currentText = course.current_title ? `正在学习：${course.current_title}` : (task.status === "running" ? "正在准备学习内容…" : "尚未开始");
+  if (current.textContent !== currentText) current.textContent = currentText;
+  const completedText = `${course.completed_count ?? 0} / ${course.total_count ?? "—"} 项完成`;
+  const percentText = Number.isFinite(course.progress_percent) ? `${course.progress_percent}%` : "—";
+  const failedText = `${course.failed_count ?? 0} 项失败`;
+  const updatedText = `更新 ${formatTime(task.updated_at)}`;
+  if (completed.textContent !== completedText) completed.textContent = completedText;
+  if (percent.textContent !== percentText) percent.textContent = percentText;
+  if (failed.textContent !== failedText) failed.textContent = failedText;
+  if (updated.textContent !== updatedText) updated.textContent = updatedText;
+  if (Number.isFinite(course.progress_percent)) {
+    if (fill.classList.contains("indeterminate")) fill.classList.remove("indeterminate");
+    const width = `${Math.max(0, Math.min(100, course.progress_percent))}%`;
+    if (fill.style.width !== width) fill.style.width = width;
+  } else {
+    if (!fill.classList.contains("indeterminate")) fill.classList.add("indeterminate");
+    if (fill.style.width) fill.style.removeProperty("width");
+  }
+  updateCourseOutlineProgress(task);
+}
+function renderCourseOutlineCard(task) {
+  const section = card("课程目录");
+  section.classList.add("course-outline-card");
+  const heading = node("div", "course-outline-progress-heading");
+  heading.appendChild(node("strong", "", "学习项目"));
+  const counts = node("span", "");
+  counts.dataset.outlineCounts = "true";
+  heading.appendChild(counts);
+  const toolbar = node("div", "course-outline-toolbar");
+  const search = node("input", "course-outline-search");
+  search.type = "search";
+  search.placeholder = "搜索章节或学习项目";
+  search.setAttribute("aria-label", "搜索课程目录");
+  const view = courseOutlineView(task.task_id);
+  search.value = view.query;
+  search.addEventListener("input", () => {
+    view.query = search.value.trim().toLocaleLowerCase();
+    applyCourseOutlineFilter(task.task_id);
+  });
+  const filter = node("div", "course-outline-filters");
+  filter.setAttribute("role", "group");
+  filter.setAttribute("aria-label", "筛选学习项目");
+  [["all", "全部"], ["pending", "待学习"], ["completed", "已完成"]].forEach(([value, label]) => {
+    const button = node("button", `course-outline-filter${view.filter === value ? " selected" : ""}`, label);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(view.filter === value));
+    button.addEventListener("click", () => {
+      view.filter = value;
+      filter.querySelectorAll("button").forEach((item) => {
+        const selected = item === button;
+        item.classList.toggle("selected", selected);
+        item.setAttribute("aria-pressed", String(selected));
+      });
+      applyCourseOutlineFilter(task.task_id);
+    });
+    filter.appendChild(button);
+  });
+  const treeActions = node("div", "course-outline-actions");
+  const follow = node("button", "button button-quiet button-small course-outline-follow", "跟随当前项目");
+  follow.type = "button";
+  follow.setAttribute("aria-pressed", String(view.followCurrent));
+  follow.classList.toggle("active", view.followCurrent);
+  follow.addEventListener("click", () => {
+    view.followCurrent = !view.followCurrent;
+    follow.setAttribute("aria-pressed", String(view.followCurrent));
+    follow.classList.toggle("active", view.followCurrent);
+    if (view.followCurrent) {
+      updateCourseOutlineProgress(task);
+      locateCurrentCourseItem(task.task_id);
+    }
+  });
+  const locate = node("button", "button button-secondary button-small", "定位当前");
+  locate.type = "button";
+  locate.addEventListener("click", () => locateCurrentCourseItem(task.task_id));
+  const expand = node("button", "button button-quiet button-small", "展开全部");
+  expand.type = "button";
+  expand.addEventListener("click", () => setCourseOutlineExpanded(task.task_id, true));
+  const collapse = node("button", "button button-quiet button-small", "收起全部");
+  collapse.type = "button";
+  collapse.addEventListener("click", () => setCourseOutlineExpanded(task.task_id, false));
+  const reload = node("button", "button button-quiet button-small", "刷新目录");
+  reload.type = "button";
+  reload.addEventListener("click", () => loadCourseOutline(task.task_id, true));
+  treeActions.append(follow, locate, expand, collapse, reload);
+  toolbar.append(search, filter, treeActions);
+  const body = node("div", "course-outline-body");
+  body.dataset.courseOutlineBody = task.task_id;
+  section.append(heading, toolbar, body);
+  return section;
+}
+async function loadCourseOutline(taskId, force = false) {
+  if (force) {
+    state.courseOutlines.delete(taskId);
+    state.courseOutlineErrors.delete(taskId);
+  }
+  if (state.courseOutlines.has(taskId) || state.courseOutlineLoading.has(taskId)) return;
+  if (!force && state.courseOutlineErrors.has(taskId)) return;
+  state.courseOutlineLoading.add(taskId);
+  updateCourseOutlineBody(taskId);
+  try {
+    const result = await api(`/api/tasks/${encodeURIComponent(taskId)}/course/outline`);
+    state.courseOutlines.set(taskId, result);
+    state.courseOutlineErrors.delete(taskId);
+  } catch (error) {
+    state.courseOutlineErrors.set(taskId, error.message || "课程目录读取失败。");
+  } finally {
+    state.courseOutlineLoading.delete(taskId);
+    if (state.detail?.task?.task_id === taskId) updateCourseOutlineBody(taskId);
+  }
+}
+function updateCourseOutlineBody(taskId) {
+  const body = el("detailPane").querySelector(`[data-course-outline-body="${CSS.escape(taskId)}"]`);
+  if (!body) return;
+  clear(body);
+  const outline = state.courseOutlines.get(taskId);
+  if (outline && Array.isArray(outline.items)) {
+    const count = body.closest(".course-outline-card")?.querySelector("[data-outline-counts]");
+    if (count) count.textContent = `${countOutlineLeaves(outline.items)} 个学习项目`;
+    if (!outline.items.length) {
+      body.appendChild(statusLine("info", "当前课程没有可显示的学习项目。"));
+      return;
+    }
+    const tree = node("div", "course-outline-tree");
+    tree.dataset.currentTitle = state.detail?.course?.current_title || "";
+    const view = courseOutlineView(taskId);
+    const currentPath = view.followCurrent ? findCourseOutlinePath(outline.items, tree.dataset.currentTitle) : "";
+    const matchMap = courseOutlineMatchMap(outline.items, view);
+    tree.dataset.currentPath = currentPath;
+    appendCourseOutlineNodes(tree, outline.items, "", currentPath, view, matchMap);
+    body.appendChild(tree);
+    if (outline.truncated) body.appendChild(node("p", "form-hint course-outline-note", "目录过长，当前仅显示前 2500 项。"));
+    updateCourseOutlineProgress(state.detail.task);
+    applyCourseOutlineFilter(taskId);
+    return;
+  }
+  const error = state.courseOutlineErrors.get(taskId);
+  const count = body.closest(".course-outline-card")?.querySelector("[data-outline-counts]");
+  if (error) {
+    if (count) count.textContent = "读取失败";
+    body.appendChild(statusLine("warning", error));
+    body.appendChild(actionButton("重试读取目录", () => loadCourseOutline(taskId, true), "secondary"));
+  } else {
+    if (count) count.textContent = "正在读取目录";
+    body.appendChild(statusLine("info", state.courseOutlineLoading.has(taskId) ? "正在读取课程目录…" : "等待读取课程目录…"));
+  }
+}
+function courseOutlineView(taskId) {
+  if (!state.courseOutlineViews.has(taskId)) {
+    state.courseOutlineViews.set(taskId, { query: "", filter: "all", expanded: new Set(), followCurrent: true });
+  }
+  return state.courseOutlineViews.get(taskId);
+}
+function findCourseOutlinePath(items, title, parentPath = "") {
+  if (!title) return "";
+  for (const [index, item] of items.entries()) {
+    const path = parentPath ? `${parentPath}.${index}` : String(index);
+    if (item.title === title && !(item.children || []).length) return path;
+    const childPath = findCourseOutlinePath(item.children || [], title, path);
+    if (childPath) return childPath;
+  }
+  return "";
+}
+function courseOutlineMatchMap(items, view) {
+  const matches = new Map();
+  const visit = (children, parentPath = "") => {
+    let anyMatch = false;
+    children.forEach((item, index) => {
+      const path = parentPath ? `${parentPath}.${index}` : String(index);
+      const ownMatch = (!view.query || item.title.toLocaleLowerCase().includes(view.query))
+        && (view.filter === "all" || (view.filter === "completed" ? item.completed === true : item.completed === false));
+      const childMatch = visit(item.children || [], path);
+      const match = ownMatch || childMatch;
+      matches.set(path, match);
+      anyMatch = anyMatch || match;
+    });
+    return anyMatch;
+  };
+  visit(items);
+  return matches;
+}
+function outlineStatusCounts(item) {
+  const children = item.children || [];
+  if (!children.length) return { completed: item.completed === true ? 1 : 0, known: typeof item.completed === "boolean" ? 1 : 0, items: 1 };
+  return children.reduce((sum, child) => {
+    const nested = outlineStatusCounts(child);
+    sum.completed += nested.completed;
+    sum.known += nested.known;
+    sum.items += nested.items;
+    return sum;
+  }, { completed: 0, known: 0, items: 0 });
+}
+function outlineStatusLabel(item) {
+  const children = item.children || [];
+  if (!children.length) return item.completed === true ? "已完成" : (item.completed === false ? "待学习" : "状态未知");
+  const totals = outlineStatusCounts(item);
+  return totals.known ? `${totals.completed}/${totals.known} 已完成` : `${totals.items} 个项目`;
+}
+function appendCourseOutlineNodes(container, items, parentPath, currentPath, view, matchMap) {
+  items.forEach((item, index) => {
+    const children = Array.isArray(item.children) ? item.children : [];
+    const path = parentPath ? `${parentPath}.${index}` : String(index);
+    const containsCurrent = Boolean(currentPath && (path === currentPath || currentPath.startsWith(`${path}.`)));
+    const row = node(children.length ? "summary" : "div", "course-outline-row");
+    row.dataset.outlineTitle = item.title;
+    row.dataset.outlinePath = path;
+    row.dataset.completed = item.completed === true ? "true" : "false";
+    row.appendChild(node("span", "course-outline-title", item.title));
+    const active = path === currentPath && Boolean(currentPath);
+    if (active) row.classList.add("is-current");
+    if (item.completed === true) row.classList.add("is-completed");
+    const baseStateLabel = outlineStatusLabel(item);
+    row.dataset.outlineStatusLabel = baseStateLabel;
+    const stateBadge = node("span", "course-outline-state", active ? "正在学习" : baseStateLabel);
+    stateBadge.dataset.outlineState = "true";
+    row.appendChild(stateBadge);
+    if (!children.length) {
+      container.appendChild(row);
+      return;
+    }
+    const group = node("details", "course-outline-group");
+    group.dataset.outlinePath = path;
+    group.open = view.expanded.has(path) || (view.followCurrent && containsCurrent) || Boolean((view.query || view.filter !== "all") && matchMap.get(path));
+    row.setAttribute("aria-expanded", String(group.open));
+    group.addEventListener("toggle", () => {
+      if (group.open) view.expanded.add(path);
+      else view.expanded.delete(path);
+      const summary = group.querySelector(":scope > summary");
+      summary?.setAttribute("aria-expanded", String(group.open));
+    });
+    group.appendChild(row);
+    const nested = node("div", "course-outline-children");
+    appendCourseOutlineNodes(nested, children, path, currentPath, view, matchMap);
+    group.appendChild(nested);
+    container.appendChild(group);
+  });
+}
+function applyCourseOutlineFilter(taskId) {
+  const body = el("detailPane").querySelector(`[data-course-outline-body="${CSS.escape(taskId)}"]`);
+  const tree = body?.querySelector(".course-outline-tree");
+  if (!tree) return;
+  const view = courseOutlineView(taskId);
+  const matches = courseOutlineMatchMap(state.courseOutlines.get(taskId)?.items || [], view);
+  for (const row of tree.querySelectorAll("[data-outline-path]")) {
+    const isMatch = Boolean(matches.get(row.dataset.outlinePath));
+    if (row.hidden !== !isMatch) row.hidden = !isMatch;
+    const group = row.closest("details");
+    if (group) {
+      const groupMatches = Boolean(matches.get(group.dataset.outlinePath));
+      if (group.hidden !== !groupMatches) group.hidden = !groupMatches;
+      if ((view.query || view.filter !== "all") && groupMatches && !group.open) group.open = true;
+      const summary = group.querySelector(":scope > summary");
+      if (summary?.getAttribute("aria-expanded") !== String(group.open)) summary?.setAttribute("aria-expanded", String(group.open));
+    }
+  }
+  const visible = tree.querySelectorAll("[data-outline-path]:not([hidden])").length;
+  let empty = body.querySelector(".course-outline-empty");
+  if (!visible && !empty) {
+    empty = node("p", "form-hint course-outline-empty", view.query ? "没有匹配的学习项目。" : "此筛选下没有学习项目。");
+    body.appendChild(empty);
+  } else if (visible && empty) empty.remove();
+  else if (empty) {
+    const text = view.query ? "没有匹配的学习项目。" : "此筛选下没有学习项目。";
+    if (empty.textContent !== text) empty.textContent = text;
+  }
+}
+function setCourseOutlineExpanded(taskId, expanded) {
+  const view = courseOutlineView(taskId);
+  const outline = state.courseOutlines.get(taskId);
+  if (!outline) return;
+  view.expanded.clear();
+  if (expanded) {
+    const visit = (items, parent = "") => items.forEach((item, index) => {
+      const path = parent ? `${parent}.${index}` : String(index);
+      if ((item.children || []).length) view.expanded.add(path);
+      visit(item.children || [], path);
+    });
+    visit(outline.items);
+  } else {
+    view.followCurrent = false;
+  }
+  const follow = el("detailPane").querySelector(".course-outline-follow");
+  if (follow) {
+    follow.classList.toggle("active", view.followCurrent);
+    follow.setAttribute("aria-pressed", String(view.followCurrent));
+  }
+  updateCourseOutlineBody(taskId);
+}
+function locateCurrentCourseItem(taskId) {
+  const title = state.detail?.course?.current_title || "";
+  const path = findCourseOutlinePath(state.courseOutlines.get(taskId)?.items || [], title);
+  if (!path) {
+    toast(title ? "目录中暂时没有匹配的当前项目。" : "当前还没有正在学习的项目。", "info");
+    return;
+  }
+  const tree = el("detailPane").querySelector(`[data-course-outline-body="${CSS.escape(taskId)}"] .course-outline-tree`);
+  const row = tree?.querySelector(`[data-outline-path="${CSS.escape(path)}"]`);
+  if (row) {
+    const view = courseOutlineView(taskId);
+    view.followCurrent = true;
+    if (row.hidden) {
+      view.query = "";
+      view.filter = "all";
+      const search = el("detailPane").querySelector(".course-outline-search");
+      if (search) search.value = "";
+      el("detailPane").querySelectorAll(".course-outline-filter").forEach((button) => {
+        const selected = button.textContent === "全部";
+        button.classList.toggle("selected", selected);
+        button.setAttribute("aria-pressed", String(selected));
+      });
+    }
+    const follow = el("detailPane").querySelector(".course-outline-follow");
+    if (follow) {
+      follow.classList.add("active");
+      follow.setAttribute("aria-pressed", "true");
+    }
+    updateCourseOutlineProgress(state.detail.task);
+    let group = row.closest("details");
+    while (group) {
+      group.open = true;
+      group = group.parentElement?.closest("details") || null;
+    }
+    row.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
+    row.classList.add("course-outline-locate");
+    window.setTimeout(() => row.classList.remove("course-outline-locate"), 1200);
+  }
+}
+function updateCourseOutlineProgress(task) {
+  const course = state.detail?.course || {};
+  const body = el("detailPane").querySelector(`[data-course-outline-body="${CSS.escape(task.task_id)}"]`);
+  if (!body) return;
+  const card = body.closest(".content-card");
+  if (!card) return;
+  const counts = card.querySelector("[data-outline-counts]");
+  const outline = state.courseOutlines.get(task.task_id);
+  const countsText = outline ? `${countOutlineLeaves(outline.items || [])} 个学习项目` : "正在读取目录";
+  if (counts && counts.textContent !== countsText) counts.textContent = countsText;
+  const tree = body.querySelector(".course-outline-tree");
+  if (!tree) return;
+  const title = course.current_title || "";
+  const titleChanged = tree.dataset.currentTitle !== title;
+  if (titleChanged) tree.dataset.currentTitle = title;
+  const view = courseOutlineView(task.task_id);
+  const path = view.followCurrent ? findCourseOutlinePath(state.courseOutlines.get(task.task_id)?.items || [], title) : "";
+  if (tree.dataset.currentPath !== path) tree.dataset.currentPath = path;
+  for (const row of tree.querySelectorAll("[data-outline-title]")) {
+    const active = Boolean(path) && row.dataset.outlinePath === path;
+    row.classList.toggle("is-current", active);
+    if (active && row.getAttribute("aria-current") !== "location") row.setAttribute("aria-current", "location");
+    else if (!active && row.hasAttribute("aria-current")) row.removeAttribute("aria-current");
+    const label = row.querySelector("[data-outline-state]");
+    if (label) {
+      const labelText = active ? "正在学习" : row.dataset.outlineStatusLabel;
+      if (label.textContent !== labelText) label.textContent = labelText;
+    }
+    if (active) {
+      let group = row.parentElement?.closest("details") || null;
+      while (group) {
+        group.open = true;
+        const summary = group.querySelector(":scope > summary");
+        if (summary?.getAttribute("aria-expanded") !== "true") summary?.setAttribute("aria-expanded", "true");
+        group = group.parentElement?.closest("details") || null;
+      }
+      if (titleChanged && view.followCurrent) row.scrollIntoView({ behavior: motionScrollBehavior(), block: "nearest" });
+    }
+  }
+  applyCourseOutlineFilter(task.task_id);
+}
+function countOutlineLeaves(items) {
+  return items.reduce((count, item) => {
+    const children = item.children || [];
+    return count + (children.length ? countOutlineLeaves(children) : 1);
+  }, 0);
+}
+function renderCourseOptionsEditor(task, options) {
+  const form = node("form", "course-settings-form");
+  const isAi = state.detail.course?.mode === "ai";
+  const speed = courseOptionInput("播放速度（倍）", "speed", "number", options.speed, { min: "0.1", max: "500", step: "0.1" },
+    "视频进度的推进倍率：1 为原速，1.5 为 1.5 倍。可填 0.1–500；speed: 校内学分课播放速度正常最高为1.25, 共享学分课为1.5, 但似乎更高的服务器也接受, 不过怕暴露就谨慎些吧");
+  const threshold = courseOptionInput("视频完成阈值（比例）", "threshold", "number", options.threshold, { min: "0.01", max: "1", step: "0.01" },
+    isAi ? "当前 AI 课程按完整视频时长运行，此参数暂不生效，保留原值。"
+      : "0.91 表示到视频时长的 91% 后尝试结束，1 表示完整时长；共享课还会覆盖后续视频内题目。它不是课程总进度或考试及格线，完成情况以站点认定为准。");
+  threshold.input.disabled = isAi;
+  const limit = courseOptionInput("运行时限（分钟）", "time_limit_minutes", "number", options.time_limit_minutes, { min: "0", max: "14400", step: "1" },
+    "本次运行的时间预算，0 表示不限时。部分模式在学习项目边界检查，另有约 10 分钟收尾缓冲，因此不是精确倒计时。");
+  form.append(speed.label, threshold.label, limit.label);
+  if (isAi) {
+    const exam = courseOptionInput("处理 AI 课程考试", "process_exam", "checkbox", options.process_exam, {},
+      "开启后会调用所选模型作答并提交 AI 课程考试；关闭后只处理学习资源。模型请求可能产生服务费用。");
+    form.appendChild(exam.label);
+    const profileLabel = node("label", "course-setting-field", "模型档案");
+    const profile = node("select");
+    profile.name = "model_profile_id";
+    profile.id = "course-setting-model-profile";
+    profile.setAttribute("aria-describedby", "course-setting-model-profile-help");
+    profile.appendChild(new Option("稍后选择", ""));
+    for (const item of state.profiles) profile.appendChild(new Option(`${item.name} · v${item.version}`, item.profile_id));
+    profile.value = task.model_profile_id || "";
+    profileLabel.appendChild(profile);
+    const profileHelp = node("span", "form-hint course-setting-help", "指定 AI 课程使用的模型与服务；当前启动流程要求 AI 课程选择可用档案，即使关闭考试也需要配置。");
+    profileHelp.id = "course-setting-model-profile-help";
+    profileLabel.appendChild(profileHelp);
+    form.appendChild(profileLabel);
+  }
+  form.appendChild(renderCourseParameterTips(form, isAi));
+  const row = actionRow();
+  const save = actionButton("保存参数", async () => {
+    if (!form.reportValidity()) return;
+    const values = {
+      speed: Number(form.elements.speed.value), threshold: Number(form.elements.threshold.value),
+      time_limit_minutes: Number(form.elements.time_limit_minutes.value)
+    };
+    if (state.detail.course?.mode === "ai") {
+      values.process_exam = form.elements.process_exam.checked;
+      values.model_profile_id = form.elements.model_profile_id.value || null;
+    }
+    const saved = await runAction(() => api(`/api/tasks/${encodeURIComponent(task.task_id)}/course-settings`, { method: "PUT", body: { options: values } }), "课程参数已保存。");
+    if (!saved) return;
+    state.courseOptionsEditing = false;
+    if (state.detail) renderCourseDetail(state.detail.task);
+  });
+  row.appendChild(save);
+  row.appendChild(actionButton("取消", () => { state.courseOptionsEditing = false; renderCourseDetail(task); }, "quiet"));
+  form.appendChild(row);
+  form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); });
+  return form;
+}
+function courseOptionInput(labelText, name, type, value, attributes = {}, description = "") {
+  const label = node("label", `course-setting-field${type === "checkbox" ? " course-setting-checkbox" : ""}`);
+  const title = node("span", "", labelText);
+  const input = node("input");
+  input.name = name;
+  input.id = `course-setting-${name}`;
+  input.type = type;
+  if (type === "number") input.required = true;
+  if (type === "checkbox") input.checked = Boolean(value);
+  else input.value = value ?? "";
+  for (const [key, attribute] of Object.entries(attributes)) input.setAttribute(key, attribute);
+  if (type === "checkbox") label.append(input, title);
+  else label.append(title, input);
+  if (description) {
+    const help = node("span", "form-hint course-setting-help", description);
+    help.id = `${input.id}-help`;
+    input.setAttribute("aria-describedby", help.id);
+    label.appendChild(help);
+  }
+  return { label, input };
+}
+function renderCourseParameterTips(form, isAi) {
+  const tips = node("aside", "course-parameter-tips");
+  const heading = node("h4", "", "Tips · 按场景选一组参数");
+  heading.id = "course-parameter-tips-heading";
+  tips.setAttribute("aria-labelledby", heading.id);
+  tips.append(heading, node("p", "form-hint", "以下是使用场景参考，不能保证站点完成认定或避免验证码。填入后仍需点击“保存参数”。"));
+  const presets = [
+    { title: "首次试运行", description: "先观察课程内容和进度反馈。", speed: 1, threshold: 1, minutes: 15, exam: false },
+    { title: "日常分段学习", description: "沿用项目默认速度，给本次学习留一小时预算。", speed: 1.5, threshold: 0.91, minutes: 60, exam: false },
+    { title: "按完整时长学习", description: "原速运行，不设置本次时间上限。", speed: 1, threshold: 1, minutes: 0, exam: false },
+    { title: "快速刷网课", description: "高倍率推进；建议先短时试跑并确认站点进度正常。", speed: 100, threshold: 0.91, minutes: 60, exam: false }
+  ];
+  if (isAi) presets.push({ title: "AI 课程含考试", description: "学习资源并处理考试；需配置可用模型。", speed: 1, threshold: 1, minutes: 60, exam: true });
+  const list = node("div", "course-preset-list");
+  const status = node("p", "form-hint course-preset-status", "推荐值只填写当前表单，不会直接保存或启动任务；模型档案由你选择。");
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  for (const preset of presets) {
+    const item = node("div", "course-preset");
+    item.append(node("strong", "", preset.title), node("p", "form-hint", preset.description));
+    const thresholdText = isAi ? "阈值不适用" : `阈值 ${Math.round(preset.threshold * 100)}%`;
+    const timeText = preset.minutes ? `${preset.minutes} 分钟` : "不限时";
+    const examText = isAi ? ` · 考试${preset.exam ? "开启" : "关闭"}` : "";
+    item.appendChild(node("p", "course-preset-values", `${preset.speed} 倍 · ${thresholdText} · ${timeText}${examText}`));
+    const apply = node("button", "button button-secondary button-small", "填入参数");
+    apply.type = "button";
+    apply.setAttribute("aria-label", `填入${preset.title}推荐参数`);
+    apply.addEventListener("click", () => {
+      form.elements.speed.value = String(preset.speed);
+      if (!isAi) form.elements.threshold.value = String(preset.threshold);
+      form.elements.time_limit_minutes.value = String(preset.minutes);
+      if (isAi) form.elements.process_exam.checked = preset.exam;
+      const needsProfile = isAi && !form.elements.model_profile_id.value;
+      status.textContent = `已填入“${preset.title}”，尚未保存。${needsProfile ? "请选择模型档案后保存。" : "确认后点击“保存参数”。"}`;
+    });
+    item.appendChild(apply);
+    list.appendChild(item);
+  }
+  tips.append(list, status);
+  return tips;
 }
 function renderDetailAlert(task) {
   if (task.queue_state === "queued" && task.queue_position) return statusLine("warning", `队列第 ${task.queue_position} 位`);
@@ -550,7 +1635,7 @@ function syncWizardStep(task) {
   state.wizardDerivedStep = derived;
 }
 function isTaskBusy(task) {
-  return state.busy || Boolean(task.queue_state) || ["authenticating", "crawling", "solving", "filling", "submitting", "cancelling"].includes(task.status);
+  return state.busy || Boolean(task.queue_state) || ["authenticating", "crawling", "solving", "filling", "submitting", "cancelling", "running", "stopping"].includes(task.status);
 }
 function cookieReady() { return Boolean(state.cookieStatus.captured && state.cookieStatus.configured); }
 function renderStepper(task) {
@@ -639,6 +1724,24 @@ function renderModelAuthorizationPage(task) {
   return section;
 }
 function renderSolveProgress() {
+  const [percent, label] = solveProgressView();
+  const wrapper = node("div", "solve-progress");
+  wrapper.dataset.solveProgress = "true";
+  const heading = node("div", "solve-progress-heading");
+  const title = node("strong", "", label);
+  title.dataset.solveProgressLabel = "true";
+  const amount = node("span", "", `${percent}%`);
+  amount.dataset.solveProgressPercent = "true";
+  heading.append(title, amount);
+  const track = node("div", "progress-track");
+  const fill = node("div", "progress-fill");
+  fill.dataset.solveProgressFill = "true";
+  fill.style.width = `${percent}%`;
+  track.appendChild(fill);
+  wrapper.append(heading, track);
+  return wrapper;
+}
+function solveProgressView() {
   const stages = {
     started: [8, "正在准备解题任务"],
     model_request_started: [38, "正在请求模型服务"],
@@ -648,16 +1751,18 @@ function renderSolveProgress() {
   };
   const solveEvents = state.runtimeEvents.filter((event) => event.stage === "solve");
   const latest = solveEvents[solveEvents.length - 1];
-  const [percent, label] = stages[latest?.status] || [5, "正在等待解题进度"];
-  const wrapper = node("div", "solve-progress");
-  const heading = node("div", "solve-progress-heading");
-  heading.append(node("strong", "", label), node("span", "", `${percent}%`));
-  const track = node("div", "progress-track");
-  const fill = node("div", "progress-fill");
-  fill.style.width = `${percent}%`;
-  track.appendChild(fill);
-  wrapper.append(heading, track);
-  return wrapper;
+  return stages[latest?.status] || [5, "正在等待解题进度"];
+}
+function updateSolveProgress() {
+  const wrapper = el("detailPane").querySelector("[data-solve-progress]");
+  if (!wrapper) return;
+  const [percent, label] = solveProgressView();
+  const title = wrapper.querySelector("[data-solve-progress-label]");
+  const amount = wrapper.querySelector("[data-solve-progress-percent]");
+  const fill = wrapper.querySelector("[data-solve-progress-fill]");
+  if (title && title.textContent !== label) title.textContent = label;
+  if (amount && amount.textContent !== `${percent}%`) amount.textContent = `${percent}%`;
+  if (fill && fill.style.width !== `${percent}%`) fill.style.width = `${percent}%`;
 }
 function renderSolvePage(task) {
   const section = card();
@@ -842,7 +1947,8 @@ async function startAnswerFilling() {
   }
 }
 async function stopTask(task) {
-  if (!window.confirm("确定要停止当前任务操作吗？后端会在安全位置停止，不会自动重试提交。")) return;
+  const message = task.task_type === "course" ? "确定要停止当前课程学习吗？" : "确定要停止当前任务操作吗？后端会在安全位置停止，不会自动重试提交。";
+  if (!window.confirm(message)) return;
   await runAction(() => api(`/api/tasks/${task.task_id}/stop`, { method: "POST", body: {} }), "已请求停止。");
 }
 async function retryInteraction(task) {
@@ -857,13 +1963,70 @@ function renderReviewCard(editableOverride) {
     ? task.status === "answer_review" || (task.status === "ready_for_interaction" && task.interaction_retry_authorized)
     : Boolean(editableOverride);
   const section = card(`题目与答案 · ${review.questions.length} 题`);
+  if (editable) section.appendChild(renderAnswerReviewSummary(review.questions));
   const list = node("div", "question-list");
-  review.questions.forEach((question) => list.appendChild(renderQuestion(question, editable)));
+  review.questions.forEach((question, index) => list.appendChild(renderQuestion(question, editable, index)));
   section.appendChild(list);
   return section;
 }
-function renderQuestion(question, editable) {
+function renderAnswerReviewSummary(questions) {
+  const summary = node("div", "answer-review-summary");
+  const top = node("div", "answer-review-summary-top");
+  const label = node("strong", "", "答案完成情况");
+  const count = node("span", "");
+  count.dataset.answerReviewCount = "true";
+  top.append(label, count);
+  const track = node("div", "progress-track");
+  const fill = node("div", "progress-fill");
+  fill.dataset.answerReviewFill = "true";
+  track.appendChild(fill);
+  const navigation = node("nav", "answer-question-nav");
+  navigation.setAttribute("aria-label", "按题号定位");
+  questions.forEach((question, index) => {
+    const link = node("button", "answer-question-link", String(question.number));
+    link.type = "button";
+    link.setAttribute("aria-label", `跳转到第 ${question.number} 题`);
+    link.dataset.answerQuestionLink = String(index);
+    link.addEventListener("click", () => {
+      const target = el(`answer-question-${index}`);
+      if (!target) return;
+      target.scrollIntoView({ behavior: motionScrollBehavior(), block: "start" });
+      target.focus({ preventScroll: true });
+    });
+    navigation.appendChild(link);
+  });
+  summary.append(top, track, navigation);
+  updateAnswerReviewSummary(questions, summary);
+  return summary;
+}
+function questionHasAnswer(question) {
+  const answer = state.answerMap.get(question.question_id);
+  if (!answer) return false;
+  if (question.question_type === "single_choice") return Boolean(answer.value);
+  if (question.question_type === "multiple_choice") return answer.values.size > 0;
+  if (question.question_type === "fill_blank") return question.answer_slots.every((slot) => (answer.values.get(slot.slot_id) || "").trim());
+  return Boolean(answer.value && answer.value.trim());
+}
+function updateAnswerReviewSummary(questions = state.review?.questions || [], root = el("detailPane")) {
+  const summary = root.matches?.(".answer-review-summary") ? root : root.querySelector(".answer-review-summary");
+  if (!summary) return;
+  const answered = questions.filter(questionHasAnswer).length;
+  const count = summary.querySelector("[data-answer-review-count]");
+  const fill = summary.querySelector("[data-answer-review-fill]");
+  if (count) count.textContent = `${answered} / ${questions.length} 题已完成`;
+  if (fill) fill.style.width = `${questions.length ? answered / questions.length * 100 : 0}%`;
+  summary.querySelectorAll("[data-answer-question-link]").forEach((link, index) => {
+    const complete = questionHasAnswer(questions[index]);
+    link.classList.toggle("complete", complete);
+    link.classList.toggle("incomplete", !complete);
+    link.setAttribute("aria-label", `第 ${questions[index].number} 题，${complete ? "已填写" : "未填写"}`);
+  });
+}
+function renderQuestion(question, editable, index) {
   const item = node("article", "question-card");
+  item.id = `answer-question-${index}`;
+  item.dataset.answerQuestionIndex = String(index);
+  item.tabIndex = -1;
   const heading = node("div", "question-heading");
   heading.appendChild(node("strong", "question-number", `第 ${question.number} 题`));
   heading.appendChild(node("span", "question-type", question.source_type || question.question_type));
@@ -907,7 +2070,7 @@ function renderAnswerEditor(question, editable) {
     for (const option of question.options) {
       const row = node("div", "option-editor");
       const input = node("input"); input.type = "radio"; input.name = `answer_${question.question_id}`; input.value = option.option_id; input.checked = answer.value === option.option_id;
-      input.addEventListener("change", () => { answer.value = option.option_id; });
+      input.addEventListener("change", () => { answer.value = option.option_id; updateAnswerReviewSummary(); });
       const label = node("label", "", `${option.label}. ${option.content.text || "（图片选项）"}`);
       row.append(input, label); wrapper.appendChild(row);
       const assets = renderAssets(option.content.assets);
@@ -917,7 +2080,7 @@ function renderAnswerEditor(question, editable) {
     for (const option of question.options) {
       const row = node("div", "option-editor");
       const input = node("input"); input.type = "checkbox"; input.value = option.option_id; input.checked = answer.values.has(option.option_id);
-      input.addEventListener("change", () => { if (input.checked) answer.values.add(option.option_id); else answer.values.delete(option.option_id); });
+      input.addEventListener("change", () => { if (input.checked) answer.values.add(option.option_id); else answer.values.delete(option.option_id); updateAnswerReviewSummary(); });
       const label = node("label", "", `${option.label}. ${option.content.text || "（图片选项）"}`);
       row.append(input, label); wrapper.appendChild(row);
       const assets = renderAssets(option.content.assets);
@@ -928,12 +2091,12 @@ function renderAnswerEditor(question, editable) {
       const field = node("div", "slot-editor");
       field.appendChild(node("span", "slot-label", `空位 ${slot.ordinal}`));
       const input = node("input"); input.type = "text"; input.value = answer.values.get(slot.slot_id) || "";
-      input.addEventListener("input", () => answer.values.set(slot.slot_id, input.value));
+      input.addEventListener("input", () => { answer.values.set(slot.slot_id, input.value); updateAnswerReviewSummary(); });
       field.appendChild(input); wrapper.appendChild(field);
     }
   } else {
     const input = node("textarea"); input.value = answer.value || ""; input.placeholder = "填写纯文本答案";
-    input.addEventListener("input", () => { answer.value = input.value; });
+    input.addEventListener("input", () => { answer.value = input.value; updateAnswerReviewSummary(); });
     wrapper.appendChild(input);
   }
   return wrapper;
@@ -1001,9 +2164,14 @@ async function requestModelAuthorization(task, extraOptions) {
 }
 function showModelAuthorization(summary) {
   state.modelAuthorizationId = summary.task_id;
-  const panel = el("modelAuthorizationSummary"); clear(panel);
   const rows = [["模型档案", `${summary.profile_name} · v${summary.profile_version}`], ["模型", summary.model], ["请求目的地", summary.service_destination], ["题目数量", summary.question_count], ["图片附件", summary.image_count]];
-  for (const [label, value] of rows) { const row = node("div", "summary-row"); row.append(node("span", "", label), node("span", "", value)); panel.appendChild(row); }
+  const panel = el("modelAuthorizationSummary");
+  const signature = JSON.stringify(rows);
+  if (panel.dataset.authorizationSignature !== signature || panel.childElementCount !== rows.length) {
+    clear(panel);
+    for (const [label, value] of rows) { const row = node("div", "summary-row"); row.append(node("span", "", label), node("span", "", value)); panel.appendChild(row); }
+    panel.dataset.authorizationSignature = signature;
+  }
   openDialog("modelAuthorizationDialog");
   el("confirmModelAuthorization").onclick = () => respondModelAuthorization(true);
   el("cancelModelAuthorization").onclick = () => respondModelAuthorization(false);
@@ -1036,29 +2204,79 @@ async function respondSubmitConfirmation(decision) {
   } catch (error) { toast(error.message, "error"); }
 }
 function renderEventCard() {
-  const events = [...(state.detail.events || [])].reverse().slice(-20);
-  const details = node("details", "disclosure");
-  details.appendChild(node("summary", "", `事件记录 · ${events.length}`));
+  const details = node("details", "disclosure event-card");
+  details.appendChild(node("summary", ""));
   const list = node("div", "event-list");
-  for (const event of events) {
-    const row = node("div", "event-row");
-    row.appendChild(node("div", "event-time", formatTime(event.occurred_at)));
-    row.appendChild(node("div", "event-text", [event.event_type, event.to_status, event.safe_error_category].filter(Boolean).join(" · ")));
-    list.appendChild(row);
-  }
-  if (!events.length) list.appendChild(node("p", "form-hint", "暂无事件记录。"));
   details.appendChild(list);
+  syncEventCard(details);
   return details;
 }
+function updateEventCard() {
+  const pane = el("detailPane");
+  let details = pane.querySelector(".event-card");
+  if (!details) {
+    details = renderEventCard();
+    pane.appendChild(details);
+    return;
+  }
+  syncEventCard(details);
+}
+function eventList() {
+  return [...(state.detail?.events || [])].reverse().slice(-20);
+}
+function eventKey(event, index) {
+  const identity = event.sequence ?? event.event_id;
+  return identity == null
+    ? `${event.occurred_at || ""}\u0001${event.event_type || ""}\u0001${event.from_status || ""}\u0001${event.to_status || ""}\u0001${event.safe_error_category || ""}\u0001${index}`
+    : String(identity);
+}
+function makeEventRow(event, key) {
+  const row = node("div", "event-row");
+  row.dataset.eventKey = key;
+  row.appendChild(node("div", "event-time", formatTime(event.occurred_at)));
+  row.appendChild(node("div", "event-text", [event.event_type, event.to_status, event.safe_error_category].filter(Boolean).join(" · ")));
+  return row;
+}
+function syncEventCard(details) {
+  const events = eventList();
+  const summary = details.querySelector(":scope > summary");
+  const list = details.querySelector(":scope > .event-list");
+  const summaryText = `事件记录 · ${events.length}`;
+  if (summary && summary.textContent !== summaryText) summary.textContent = summaryText;
+  const existing = new Map([...list.querySelectorAll(".event-row")].map((row) => [row.dataset.eventKey, row]));
+  const desiredKeys = new Set();
+  let cursor = list.firstElementChild;
+  if (!events.length) {
+    list.replaceChildren(node("p", "form-hint", "暂无事件记录。"));
+    return;
+  }
+  list.querySelector(":scope > .form-hint")?.remove();
+  for (const [index, event] of events.entries()) {
+    const key = eventKey(event, index);
+    desiredKeys.add(key);
+    const row = existing.get(key) || makeEventRow(event, key);
+    const time = row.querySelector(".event-time");
+    const text = row.querySelector(".event-text");
+    const timeText = formatTime(event.occurred_at);
+    const eventText = [event.event_type, event.to_status, event.safe_error_category].filter(Boolean).join(" · ");
+    if (time && time.textContent !== timeText) time.textContent = timeText;
+    if (text && text.textContent !== eventText) text.textContent = eventText;
+    if (row !== cursor) list.insertBefore(row, cursor);
+    cursor = row.nextElementSibling;
+  }
+  for (const [key, row] of existing) if (!desiredKeys.has(key)) row.remove();
+}
 async function archiveTask(task) {
-  if (!window.confirm("确认归档此任务？归档不会删除题包，可在任务库中保留记录。")) return;
+  const message = task.task_type === "course" ? "确认归档此课程任务？归档会保留课程记录。" : "确认归档此任务？归档不会删除题包，可在任务库中保留记录。";
+  if (!window.confirm(message)) return;
   await runAction(() => api(`/api/tasks/${task.task_id}/archive`, { method: "POST", body: {} }), "任务已归档。");
 }
 let deleteTarget = null;
 function openDeleteTaskDialog(task) {
-  const packageMode = Boolean(task.run_id);
+  const isCourse = task.task_type === "course";
+  const packageMode = !isCourse && Boolean(task.run_id);
   deleteTarget = task;
-  el("deleteTaskHeading").textContent = packageMode ? "删除任务与题包" : "删除任务";
+  el("deleteTaskHeading").textContent = isCourse ? "删除运行记录" : (packageMode ? "删除任务与题包" : "删除任务");
   el("deleteTaskTitle").textContent = task.title;
   const facts = el("deleteTaskFacts");
   clear(facts);
@@ -1073,12 +2291,12 @@ function openDeleteTaskDialog(task) {
   }
   el("deleteTaskWarning").textContent = packageMode
     ? "题目、附件、答案、执行结果和任务记录会一并移除，无法恢复。"
-    : "该任务还没有题包，只会移除任务记录与状态历史，不涉及本机文件。";
+    : (isCourse ? "课程进度、事件记录与运行目录会一并移除。" : "该任务还没有题包，只会移除任务记录与状态历史，不涉及本机文件。");
   el("deleteTaskConfirmRow").hidden = !packageMode;
   const input = el("deleteTaskConfirmInput");
   input.value = "";
   const confirm = el("confirmDeleteTask");
-  confirm.textContent = packageMode ? "永久删除" : "删除任务";
+  confirm.textContent = packageMode ? "永久删除" : (isCourse ? "删除运行记录" : "删除任务");
   confirm.disabled = packageMode;
   input.oninput = () => { confirm.disabled = input.value.trim() !== "DELETE"; };
   input.onkeydown = (event) => { if (event.key === "Enter" && !confirm.disabled) { event.preventDefault(); confirmDeleteTask(); } };
@@ -1088,7 +2306,7 @@ function openDeleteTaskDialog(task) {
 async function confirmDeleteTask() {
   const task = deleteTarget;
   if (!task) return;
-  const packageMode = Boolean(task.run_id);
+  const packageMode = task.task_type !== "course" && Boolean(task.run_id);
   closeDialog("deleteTaskDialog");
   deleteTarget = null;
   try {
@@ -1114,6 +2332,7 @@ function openNewTask() {
   form.reset();
   renderProfileOptions();
   form.elements.model_profile_id.value = state.profiles.find((profile) => profile.is_default)?.profile_id || "";
+  applyTaskType("homework");
   openDialog("newTaskDialog");
 }
 async function openEditTask() {
@@ -1122,6 +2341,8 @@ async function openEditTask() {
   try {
     const settings = await api(`/api/tasks/${state.editTaskId}/draft-settings`);
     const form = el("newTaskForm");
+    form.elements.task_type.value = "homework";
+    applyTaskType("homework");
     form.elements.title.value = state.detail.task.title;
     form.elements.site_id.value = state.detail.task.site_id;
     form.elements.page_url.value = settings.page_url;
@@ -1133,15 +2354,22 @@ async function openEditTask() {
 async function submitNewTask(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const payload = {
+  const taskType = form.elements.task_type.value;
+  const payload = taskType === "course" ? {
+    task_type: "course",
+    site_id: form.elements.site_id.value,
+    title: form.elements.title.value.trim(),
+    course: {}
+  } : {
     title: form.elements.title.value.trim(),
     site_id: form.elements.site_id.value,
     page_url: form.elements.page_url.value.trim(),
     model_profile_id: form.elements.model_profile_id.value || null
   };
-  if (!payload.page_url) { toast("请填写作业网址。", "error"); return; }
+  let createdCourseTask = null;
+  if (taskType === "homework" && !payload.page_url) { toast("请填写作业网址。", "error"); return; }
   try {
-    if (state.editTaskId) {
+    if (state.editTaskId && taskType === "homework") {
       await api(`/api/tasks/${state.editTaskId}`, { method: "PUT", body: payload });
       toast("任务设置已保存。", "success");
     } else {
@@ -1149,16 +2377,25 @@ async function submitNewTask(event) {
       state.activeTaskId = task.task_id;
       localStorage.setItem("autolearn.activeTask", task.task_id);
       toast("任务草稿已创建。", "success");
+      if (taskType === "course") createdCourseTask = task;
     }
     closeDialog("newTaskDialog"); state.editTaskId = null;
     await refreshOverview(); await refreshDetail();
+    if (createdCourseTask) await startAuthentication(createdCourseTask, false);
   } catch (error) { toast(error.message, "error"); }
 }
 function renderProfileList() {
-  const list = el("profileList"); clear(list);
+  const list = el("profileList");
+  const signature = state.profiles.map((profile) => [profile.profile_id, profile.name, profile.version, profile.is_default, profile.api_key_configured].join("\u0001")).join("\u0002");
+  if (list.dataset.profileSignature === signature && list.childElementCount) {
+    list.querySelectorAll(".profile-item").forEach((button) => button.classList.toggle("selected", button.dataset.profileId === state.profileSelection));
+    return;
+  }
+  clear(list);
   for (const profile of state.profiles) {
     const button = node("button", "profile-item");
     button.type = "button";
+    button.dataset.profileId = profile.profile_id;
     if (profile.profile_id === state.profileSelection) button.classList.add("selected");
     button.appendChild(node("strong", "", profile.name));
     button.appendChild(node("span", "", `v${profile.version}${profile.is_default ? " · 默认" : ""}${profile.api_key_configured ? " · 已配置密钥" : ""}`));
@@ -1166,6 +2403,7 @@ function renderProfileList() {
     list.appendChild(button);
   }
   if (!state.profiles.length) list.appendChild(node("p", "form-hint", "还没有模型档案。"));
+  list.dataset.profileSignature = signature;
 }
 function selectProfile(profileId) {
   state.profileSelection = profileId;
@@ -1259,8 +2497,10 @@ async function makeDefaultProfile() {
 }
 function bindEvents() {
   el("openNewTask").addEventListener("click", openNewTask);
+  el("newTaskFromEmpty").addEventListener("click", openNewTask);
   el("openSettings").addEventListener("click", () => { if (!state.profileSelection && state.profiles.length) { const selected = state.profiles.find((profile) => profile.is_default) || state.profiles[0]; selectProfile(selected.profile_id); } openDialog("profileDialog"); });
   el("newTaskForm").addEventListener("submit", submitNewTask);
+  document.querySelectorAll(".type-switch-button").forEach((button) => button.addEventListener("click", () => { state.editTaskId = null; applyTaskType(button.dataset.taskType); }));
   el("profileForm").addEventListener("submit", saveProfile);
   el("newProfileButton").addEventListener("click", () => selectProfile(null));
   el("testProfile").addEventListener("click", testProfileConnection);
@@ -1270,7 +2510,9 @@ function bindEvents() {
   el("shutdownService").addEventListener("click", shutdownService);
   el("refreshTasks").addEventListener("click", async () => { await refreshOverview(); await refreshDetail(true); });
   el("taskSearch").addEventListener("input", renderTaskList);
+  el("sortFilter").addEventListener("change", renderTaskList);
   el("siteFilter").addEventListener("change", renderTaskList);
+  el("typeFilter").addEventListener("change", () => { renderMeta(); renderTaskList(); });
   el("statusFilter").addEventListener("change", async () => { await refreshOverview(); });
   document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => closeDialog(button.dataset.closeDialog)));
   el("submitConfirmationDialog").addEventListener("cancel", (event) => { event.preventDefault(); respondSubmitConfirmation("cancel"); });
